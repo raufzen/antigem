@@ -1,6 +1,10 @@
 <div align="center">
 
-<img src="docs/readme/icon.svg" alt="AntiGem app icon" width="112">
+<img src="docs/readme/banner.svg" alt="AntiGem by Rauf Banner" width="100%">
+
+<br><br>
+
+<img src="docs/readme/icon.svg" alt="AntiGem app icon" width="96">
 
 # AntiGem by Rauf
 
