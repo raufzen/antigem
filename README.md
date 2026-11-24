@@ -1,8 +1,12 @@
 <div align="center">
 
-<img src="docs/readme/icon.svg" alt="AntiGem app icon" width="112">
+<img src="docs/readme/banner.svg" alt="AntiGem by Rauf Banner" width="100%">
 
-# AntiGem
+<br><br>
+
+<img src="docs/readme/icon.svg" alt="AntiGem app icon" width="96">
+
+# AntiGem by Rauf
 
 *A gem that defies gravity. A full coding environment, light enough to carry in your pocket.*
 
@@ -11,9 +15,11 @@
 [![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?style=flat-square&logo=kotlin&logoColor=white)](https://developer.android.com/jetpack/compose)
 [![Go](https://img.shields.io/badge/Bridge-Go-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-GPLv3-blue?style=flat-square)](LICENSE)
-[![Releases](https://img.shields.io/github/v/release/santoshkurmi/antigem?style=flat-square&label=Download)](https://github.com/santoshkurmi/antigem/releases)
+[![Releases](https://img.shields.io/github/v/release/raufzen/antigem?style=flat-square&label=Download)](https://github.com/raufzen/antigem/releases)
 
-[Download](https://github.com/santoshkurmi/antigem/releases) · [Website](https://santoshkurmi.github.io/antigem/) · [Docs & guides](https://santoshkurmi.github.io/antigem/docs/) · [VS Code extension](https://github.com/Santoshkurmi/antigem_vscode_extension) · [Plugin SDK](extension_docs/README.md) · [User Guide](user_docs/README.md) · [Discord](https://discord.gg/pJvvTDTc6G) · [WhatsApp community](https://chat.whatsapp.com/IGQX8q9zSVV0RarG70sclV?s=cl&p=a&mlu=4&ilr=4)
+[Download](https://github.com/raufzen/antigem/releases) · [Source](https://github.com/raufzen/antigem) · [Plugin SDK](extension_docs/README.md) · [User Guide](user_docs/README.md) · [Discord](https://discord.gg/pJvvTDTc6G) · [WhatsApp community](https://chat.whatsapp.com/IGQX8q9zSVV0RarG70sclV?s=cl&p=a&mlu=4&ilr=4)
+
+Curated & maintained by **[Rauf Zen](https://github.com/raufzen)**.
 
 <br>
 

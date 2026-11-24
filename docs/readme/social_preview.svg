@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="AntiGem by Rauf - Android AI Coding Workspace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#060814"/>
+      <stop offset="50%" stop-color="#0e1026"/>
+      <stop offset="100%" stop-color="#160e33"/>
+    </linearGradient>
+    <radialGradient id="glow-purple" cx="25%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.38"/>
+      <stop offset="60%" stop-color="#8b5cf6" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow-cyan" cx="80%" cy="40%" r="50%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.30"/>
+      <stop offset="60%" stop-color="#06b6d4" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#06b6d4" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#25244e" stroke-width="0.9" opacity="0.45"/>
+    </pattern>
+    <linearGradient id="title-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#c4b5fd"/>
+      <stop offset="45%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#f472b6"/>
+    </linearGradient>
+    <linearGradient id="gem-fill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="50%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#ec4899"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="card-shadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glow-purple)"/>
+  <rect width="1280" height="640" fill="url(#glow-cyan)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+
+  <!-- Outer Frame -->
+  <rect x="30" y="30" width="1220" height="580" rx="20" fill="none" stroke="#2c2c54" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- Top bar -->
+  <line x1="80" y1="85" x2="1200" y2="85" stroke="#25264a" stroke-width="1.5"/>
+  <text x="80" y="70" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="14" font-weight="700" letter-spacing="3" fill="#7d7ea8">GITHUB.COM / RAUFZEN / ANTIGEM</text>
+  <text x="1200" y="70" text-anchor="end" font-family="monospace,Courier" font-size="14" font-weight="700" fill="#38bdf8">ANDROID AI IDE · v2.0.4-BETA</text>
+
+  <!-- Main Hero Block -->
+  <g transform="translate(80, 140)">
+    <!-- Gem Icon Box -->
+    <g transform="translate(0, 10)">
+      <rect width="110" height="110" rx="26" fill="#141630" stroke="#4a4482" stroke-width="2" filter="url(#glow)"/>
+      <!-- Glowing Diamond Polygon -->
+      <polygon points="55,24 86,44 75,86 35,86 24,44" fill="none" stroke="url(#gem-fill)" stroke-width="3" stroke-linejoin="round"/>
+      <polygon points="55,24 75,86 35,86" fill="none" stroke="#38bdf8" stroke-width="1.8" opacity="0.75"/>
+      <line x1="24" y1="44" x2="86" y2="44" stroke="#c4b5fd" stroke-width="1.8" opacity="0.8"/>
+      <circle cx="55" cy="54" r="5" fill="#f472b6" filter="url(#glow)"/>
+    </g>
+
+    <!-- Main Title & Tagline -->
+    <text x="145" y="68" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="64" font-weight="900" letter-spacing="-1.5" fill="url(#title-grad)">AntiGem by Rauf</text>
+    <text x="145" y="112" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="22" font-weight="500" fill="#cbd5e1">Full Mobile AI Coding Workspace &amp; Termux Linux IDE in your pocket</text>
+
+    <!-- Feature Pill Badges -->
+    <g transform="translate(0, 175)">
+      <!-- Badge 1 -->
+      <rect x="0" y="0" width="185" height="44" rx="10" fill="#151733" stroke="#8b5cf6" stroke-width="1.4"/>
+      <text x="92" y="27" text-anchor="middle" font-family="monospace,Courier" font-size="14" font-weight="700" fill="#c4b5fd">CLAUDE &amp; AGY CLI</text>
+
+      <!-- Badge 2 -->
+      <rect x="205" y="0" width="175" height="44" rx="10" fill="#151733" stroke="#06b6d4" stroke-width="1.4"/>
+      <text x="292" y="27" text-anchor="middle" font-family="monospace,Courier" font-size="14" font-weight="700" fill="#67e8f9">TERMUX LINUX</text>
+
+      <!-- Badge 3 -->
+      <rect x="400" y="0" width="185" height="44" rx="10" fill="#151733" stroke="#10b981" stroke-width="1.4"/>
+      <text x="492" y="27" text-anchor="middle" font-family="monospace,Courier" font-size="14" font-weight="700" fill="#6ee7b7">BROWSER RUNNER</text>
+
+      <!-- Badge 4 -->
+      <rect x="605" y="0" width="180" height="44" rx="10" fill="#151733" stroke="#f59e0b" stroke-width="1.4"/>
+      <text x="695" y="27" text-anchor="middle" font-family="monospace,Courier" font-size="14" font-weight="700" fill="#fcd34d">NATIVE ANDROID</text>
+
+      <!-- Badge 5 -->
+      <rect x="805" y="0" width="175" height="44" rx="10" fill="#151733" stroke="#ec4899" stroke-width="1.4"/>
+      <text x="892" y="27" text-anchor="middle" font-family="monospace,Courier" font-size="14" font-weight="700" fill="#f472b6">STANDALONE APK</text>
+    </g>
+
+    <!-- Highlights Banner Box -->
+    <g transform="translate(0, 245)">
+      <rect x="0" y="0" width="1120" height="70" rx="12" fill="#0f1124" stroke="#2d2d52" stroke-width="1.2"/>
+      <text x="24" y="42" font-family="monospace,Courier" font-size="16" fill="#38bdf8">$</text>
+      <text x="45" y="42" font-family="monospace,Courier" font-size="15" font-weight="600" fill="#e2e8f0">antigravity run &quot;Build, debug &amp; test directly on Android&quot;</text>
+      <rect x="950" y="16" width="145" height="38" rx="8" fill="#1e1b4b" stroke="#6366f1" stroke-width="1"/>
+      <text x="1022" y="40" text-anchor="middle" font-family="monospace,Courier" font-size="13" font-weight="700" fill="#a5b4fc">v2.0.4-BETA</text>
+    </g>
+
+    <!-- Footer Bar -->
+    <g transform="translate(0, 360)">
+      <line x1="0" y1="0" x2="1120" y2="0" stroke="#25264a" stroke-width="1.5"/>
+      <text x="0" y="32" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" font-size="16" font-weight="700" fill="#6d6d9e">MAINTAINED &amp; RELEASED BY <tspan fill="#ffffff">RAUF ZEN</tspan> (@raufzen)</text>
+      <text x="1120" y="32" text-anchor="end" font-family="monospace,Courier" font-size="14" font-weight="600" fill="#6d6d9e">GPLv3 LICENSE · 100% OPEN SOURCE</text>
+    </g>
+  </g>
+</svg>
