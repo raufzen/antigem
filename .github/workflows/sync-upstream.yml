@@ -1,0 +1,60 @@
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    # Runs daily at midnight UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: standalone
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add Upstream and Fetch
+        run: |
+          git remote add upstream https://github.com/Santoshkurmi/antigem.git
+          git fetch upstream standalone --tags
+
+      - name: Check for New Upstream Commits
+        id: check_upstream
+        run: |
+          UPSTREAM_REV=$(git rev-parse upstream/standalone)
+          COMMON_BASE=$(git merge-base standalone upstream/standalone || echo "")
+          echo "Upstream rev: $UPSTREAM_REV"
+          echo "Common base: $COMMON_BASE"
+          if [ "$UPSTREAM_REV" = "$COMMON_BASE" ]; then
+            echo "Already up to date with upstream."
+            echo "new_commits=false" >> $GITHUB_OUTPUT
+          else
+            echo "New commits detected upstream!"
+            echo "new_commits=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sync and Preserve Branding
+        if: steps.check_upstream.outputs.new_commits == 'true'
+        run: |
+          # Merge upstream changes
+          git merge upstream/standalone -m "chore: auto-sync new updates from upstream AntiGem" --allow-unrelated-histories || true
+
+          # Re-apply our branding in case strings.xml or release.yml had conflicts
+          sed -i 's/<string name="app_name">AntiGem<\/string>/<string name="app_name">AntiGem by Rauf<\/string>/g' app/src/main/res/values/strings.xml
+          sed -i 's/<string name="app_name">AntiGem Beta<\/string>/<string name="app_name">AntiGem by Rauf Beta<\/string>/g' app/src/beta/res/values/strings.xml
+          sed -i 's/<string name="app_name">AntiGem Dev<\/string>/<string name="app_name">AntiGem by Rauf Dev<\/string>/g' app/src/debug/res/values/strings.xml
+
+          git add app/src/*/res/values/strings.xml
+          git commit -m "chore(branding): preserve AntiGem by Rauf branding" || true
+          git push origin standalone
