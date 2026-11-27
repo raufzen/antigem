@@ -29,16 +29,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import ai.antigem.data.daemon.ProjectItem
 import ai.antigem.theme.ClaudeTerracotta
 import java.io.File
+import ai.antigem.i18n.L
 
 @Composable
 fun ProjectPickerDialog(
@@ -67,14 +72,13 @@ fun ProjectPickerDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        val currentOnDismiss by rememberUpdatedState(onDismiss)
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss
-                ),
+                // a tap outside the card closes it. A raw tap, not clickable: TalkBack would get one big unlabeled
+                // button over the screen (Back closes the dialog for it)
+                .pointerInput(Unit) { detectTapGestures { currentOnDismiss() } },
             contentAlignment = Alignment.Center
         ) {
             Surface(
@@ -86,11 +90,9 @@ fun ProjectPickerDialog(
                     .widthIn(max = 400.dp)
                     .fillMaxWidth(0.90f)
                     .fillMaxHeight(0.72f)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = {} // consume clicks on the dialog itself
-                    )
+                    // consume taps on the dialog itself (a raw tap: a clickable made the whole card one TalkBack
+                    // item whose double-tap did nothing)
+                    .pointerInput(Unit) { detectTapGestures { } }
             ) {
                 Column(
                     modifier = Modifier
@@ -121,13 +123,14 @@ fun ProjectPickerDialog(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Select Workspace",
+                                text = L.components.projectPickerBottom.selectWorkspace,
                                 fontSize = 16.5.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.semantics { heading() }
                             )
                             Text(
-                                text = "${projects.size} available workspace${if (projects.size == 1) "" else "s"}",
+                                text = L.components.projectPickerBottom.projectscountAvailableWorkspaceValue(projects.size, if (projects.size == 1) "" else "s"),
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
@@ -142,7 +145,7 @@ fun ProjectPickerDialog(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Refresh",
+                                    contentDescription = L.common.refresh,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                                     modifier = Modifier.size(18.dp)
                                 )
@@ -155,7 +158,7 @@ fun ProjectPickerDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Close,
-                                contentDescription = "Close",
+                                contentDescription = L.common.close,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                                 modifier = Modifier.size(18.dp)
                             )
@@ -187,6 +190,8 @@ fun ProjectPickerDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(14.dp))
+                                // TalkBack: "Selected" / "Not selected"
+                                .semantics { this.selected = isSelected }
                                 .clickable {
                                     onSelectProject(null)
                                     onDismiss()
@@ -214,7 +219,7 @@ fun ProjectPickerDialog(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(
-                                            text = "General (No Workspace)",
+                                            text = L.components.projectPickerBottom.generalNoWorkspace,
                                             fontSize = 13.5.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                             color = MaterialTheme.colorScheme.onSurface
@@ -226,7 +231,7 @@ fun ProjectPickerDialog(
                                                 color = ClaudeTerracotta.copy(alpha = 0.2f)
                                             ) {
                                                 Text(
-                                                    text = "Active",
+                                                    text = L.common.active,
                                                     fontSize = 10.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = ClaudeTerracotta,
@@ -236,7 +241,7 @@ fun ProjectPickerDialog(
                                         }
                                     }
                                     Text(
-                                        text = "Chat without attaching to a directory",
+                                        text = L.components.projectPickerBottom.chatWithoutAttachingToADirectory,
                                         fontSize = 11.5.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                                     )
@@ -251,7 +256,8 @@ fun ProjectPickerDialog(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Outlined.Check,
-                                            contentDescription = "Selected",
+                                            // the row already says "Selected"
+                                            contentDescription = null,
                                             tint = Color.White,
                                             modifier = Modifier.size(15.dp)
                                         )
@@ -264,7 +270,7 @@ fun ProjectPickerDialog(
                     // Existing Workspaces / Projects
                     itemsIndexed(projects, key = { _, it -> it.path }) { _, proj ->
                         val isSelected = activeProject?.path == proj.path
-                        val folderName = proj.name.ifBlank { File(proj.path).name.ifBlank { "Workspace" } }
+                        val folderName = proj.name.ifBlank { File(proj.path).name.ifBlank { L.common.workspace } }
 
                         Surface(
                             shape = RoundedCornerShape(14.dp),
@@ -276,6 +282,7 @@ fun ProjectPickerDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(14.dp))
+                                .semantics { this.selected = isSelected }
                                 .clickable {
                                     onSelectProject(proj)
                                     onDismiss()
@@ -317,7 +324,7 @@ fun ProjectPickerDialog(
                                                 color = ClaudeTerracotta.copy(alpha = 0.2f)
                                             ) {
                                                 Text(
-                                                    text = "Active",
+                                                    text = L.common.active,
                                                     fontSize = 10.sp,
                                                     fontWeight = FontWeight.Bold,
                                                     color = ClaudeTerracotta,
@@ -344,7 +351,8 @@ fun ProjectPickerDialog(
                                     ) {
                                         Icon(
                                             imageVector = Icons.Outlined.Check,
-                                            contentDescription = "Selected",
+                                            // the row already says "Selected"
+                                            contentDescription = null,
                                             tint = Color.White,
                                             modifier = Modifier.size(15.dp)
                                         )
@@ -378,7 +386,7 @@ fun ProjectPickerDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Use Git Repository...",
+                            text = L.components.projectPickerBottom.useGitRepository,
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = ClaudeTerracotta
@@ -407,7 +415,7 @@ fun ProjectPickerDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Browse or Open Other Folder...",
+                        text = L.components.projectPickerBottom.browseOrOpenOtherFolder,
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.Bold
                     )

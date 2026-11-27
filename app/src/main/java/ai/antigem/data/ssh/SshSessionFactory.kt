@@ -72,7 +72,9 @@ object SshSessionFactory {
             override fun getPassword(): String? = pass.ifEmpty { null }
             override fun promptPassword(message: String?) = pass.isNotEmpty()
             override fun promptPassphrase(message: String?) = AuthPreferences.currentSshKeyPassphrase.isNotEmpty()
-            override fun promptYesNo(message: String?) = true // host keys are handled by PinnedHostKeys
+            // PinnedHostKeys pins a new server's key itself, so JSch only asks when the key changed (or none was sent):
+            // answering yes would connect to whoever answers, so refuse ("HostKey has been changed", see friendly())
+            override fun promptYesNo(message: String?) = false
             override fun showMessage(message: String?) {}
         }
         session.setConfig(Properties().apply {
@@ -113,12 +115,17 @@ object SshSessionFactory {
         appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.getString("$host:$port", null)?.substringAfter('|')
 
     /** Trust-on-first-use host key store, kept in the app's private preferences. */
+    /** The fingerprint of the last host key that did not match its pin (for the error message), or null. */
+    @Volatile
+    var lastChangedFingerprint: String? = null
+        private set
+
     private class PinnedHostKeys(private val host: String, private val port: Int) : HostKeyRepository {
         private val prefs get() = appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         private val id = "$host:$port"
 
         override fun check(host: String?, key: ByteArray?): Int {
-            val store = prefs ?: return HostKeyRepository.OK // no context yet: do not block
+            val store = prefs ?: return HostKeyRepository.NOT_INCLUDED // no context yet: refuse rather than trust any key
             val presented = key?.let { Base64.getEncoder().encodeToString(it) } ?: return HostKeyRepository.NOT_INCLUDED
             val saved = store.getString(id, null)
             if (saved == null) {
@@ -129,6 +136,9 @@ object SshSessionFactory {
             val savedKey = saved.substringAfter('|')
             return if (savedKey == presented) HostKeyRepository.OK else {
                 Log.w(TAG, "Host key for $id CHANGED")
+                // shown in the error, so the user can compare it with the server's (ssh-keygen -lf …)
+                lastChangedFingerprint = "SHA256:" + Base64.getEncoder().withoutPadding()
+                    .encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(Base64.getDecoder().decode(presented)))
                 HostKeyRepository.CHANGED
             }
         }
@@ -138,6 +148,14 @@ object SshSessionFactory {
         override fun remove(host: String?, type: String?, key: ByteArray?) {}
         override fun getKnownHostsRepositoryID(): String = "antigem-pinned"
         override fun getHostKey(): Array<HostKey> = emptyArray()
-        override fun getHostKey(host: String?, type: String?): Array<HostKey> = emptyArray()
+        /**
+         * The pinned key, so JSch asks the server for that key type first (prefer_known_host_key_types): a server that
+         * also offers another type later is not refused just because it offered that one first.
+         */
+        override fun getHostKey(host: String?, type: String?): Array<HostKey> {
+            val saved = prefs?.getString(id, null)?.substringAfter('|') ?: return emptyArray()
+            val key = runCatching { HostKey(host ?: id, Base64.getDecoder().decode(saved)) }.getOrNull() ?: return emptyArray()
+            return if (type == null || key.type == type) arrayOf(key) else emptyArray()
+        }
     }
 }

@@ -32,10 +32,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import ai.antigem.theme.ClaudeTerracotta
 import ai.antigem.theme.GeminiBlue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import ai.antigem.i18n.L
 
 data class FileLinkHandler(
     val onOpenFile: (path: String) -> Unit = {},
@@ -63,7 +66,8 @@ data class FileDetailsInfo(
     val isMarkdown: Boolean
 )
 
-fun extractFileDetails(rawPath: String): FileDetailsInfo {
+/** [countLines] reads the whole file (up to 5 MB): call it with true off the main thread. */
+fun extractFileDetails(rawPath: String, countLines: Boolean = true): FileDetailsInfo {
     val cleanPath = rawPath.removePrefix("file://").substringBefore("#")
     val file = File(cleanPath)
     val name = file.name.ifBlank { cleanPath.substringAfterLast('/') }
@@ -72,13 +76,13 @@ fun extractFileDetails(rawPath: String): FileDetailsInfo {
 
     var lineCount: Int? = null
     var size = 0L
-    var lastModStr = "Unknown"
+    var lastModStr = L.components.fileLinkHandler.unknown
     val exists = file.exists()
 
     if (exists) {
         size = file.length()
         try {
-            if (file.isFile && size < 5 * 1024 * 1024) {
+            if (countLines && file.isFile && size < 5 * 1024 * 1024) {
                 lineCount = file.readLines().size
             }
             val sdf = SimpleDateFormat("MMM dd, yyyy HH:mm:ss", Locale.getDefault())
@@ -109,7 +113,11 @@ fun FileDetailsDialog(
     onOpenWith: (path: String) -> Unit = onOpenInIde
 ) {
     val context = LocalContext.current
-    val details = remember(filePath) { extractFileDetails(filePath) }
+    // the dialog opens with the quick details; the line count (which reads the file) follows from the IO thread
+    val quickDetails = remember(filePath) { extractFileDetails(filePath, countLines = false) }
+    val details by produceState(quickDetails, filePath) {
+        value = withContext(Dispatchers.IO) { extractFileDetails(filePath) }
+    }
     val kind = remember(details.name) { ai.antigem.data.files.FileKinds.of(details.name) }
     // only text belongs in the editor; videos, PDFs, archives… get the app chooser
     val opensInIde = kind.isTextual
@@ -142,7 +150,7 @@ fun FileDetailsDialog(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (details.extension.isNotBlank()) ".${details.extension} file" else "File reference",
+                        text = if (details.extension.isNotBlank()) ".${details.extension} file" else L.components.fileLinkHandler.fileReference,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -158,7 +166,7 @@ fun FileDetailsDialog(
                 ) {
                     Column(modifier = Modifier.padding(10.dp)) {
                         Text(
-                            text = "Full Path:",
+                            text = L.components.fileLinkHandler.fullPath,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -180,7 +188,7 @@ fun FileDetailsDialog(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text("Size", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(L.common.size, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
                             text = formatFileSize(details.sizeBytes),
                             fontSize = 13.sp,
@@ -189,7 +197,7 @@ fun FileDetailsDialog(
                     }
                     if (details.lineCount != null) {
                         Column {
-                            Text("Lines", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(L.components.fileLinkHandler.lines, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(
                                 text = "${details.lineCount} lines",
                                 fontSize = 13.sp,
@@ -198,7 +206,7 @@ fun FileDetailsDialog(
                         }
                     }
                     Column {
-                        Text("Modified", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(L.components.fileLinkHandler.modified, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
                             text = details.lastModified.take(12),
                             fontSize = 13.sp,
@@ -214,12 +222,12 @@ fun FileDetailsDialog(
                     onClick = {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         cm.setPrimaryClip(ClipData.newPlainText("File Path", details.fullPath))
-                        Toast.makeText(context, "Path copied to clipboard", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L.components.fileLinkHandler.pathCopiedToClipboard, Toast.LENGTH_SHORT).show()
                     }
                 ) {
                     Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Copy Path")
+                    Text(L.components.fileLinkHandler.copyPath)
                 }
                 Spacer(modifier = Modifier.width(4.dp))
                 Button(
@@ -245,9 +253,9 @@ fun FileDetailsDialog(
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         when {
-                            details.isMarkdown -> "Read Markdown"
-                            opensInIde -> "Open in IDE"
-                            else -> "Open with…"
+                            details.isMarkdown -> L.components.fileLinkHandler.readMarkdown
+                            opensInIde -> L.components.fileLinkHandler.openInIde
+                            else -> L.components.fileLinkHandler.openWith
                         }
                     )
                 }
@@ -255,7 +263,7 @@ fun FileDetailsDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close")
+                Text(L.common.close)
             }
         }
     )
@@ -308,7 +316,7 @@ fun MarkdownDocViewerModal(
                     },
                     navigationIcon = {
                         IconButton(onClick = onDismiss) {
-                            Icon(Icons.Default.Close, contentDescription = "Close")
+                            Icon(Icons.Default.Close, contentDescription = L.common.close)
                         }
                     },
                     actions = {
@@ -316,10 +324,10 @@ fun MarkdownDocViewerModal(
                             onClick = {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 cm.setPrimaryClip(ClipData.newPlainText("Markdown Content", content))
-                                Toast.makeText(context, "Markdown content copied", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, L.components.fileLinkHandler.markdownContentCopied, Toast.LENGTH_SHORT).show()
                             }
                         ) {
-                            Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy Content")
+                            Icon(Icons.Outlined.ContentCopy, contentDescription = L.components.fileLinkHandler.copyContent)
                         }
                         IconButton(
                             onClick = {
@@ -329,7 +337,7 @@ fun MarkdownDocViewerModal(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Edit,
-                                contentDescription = "Edit in IDE",
+                                contentDescription = L.components.fileLinkHandler.editInIde,
                                 tint = ClaudeTerracotta
                             )
                         }
@@ -362,7 +370,7 @@ fun MarkdownDocViewerModal(
 
 private fun formatFileSize(bytes: Long): String {
     if (bytes <= 0) return "0 B"
-    val units = arrayOf("B", "KB", "MB", "GB")
-    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.size - 1)
     return "%.1f %s".format(bytes / Math.pow(1024.0, digitGroups.toDouble()), units[digitGroups])
 }

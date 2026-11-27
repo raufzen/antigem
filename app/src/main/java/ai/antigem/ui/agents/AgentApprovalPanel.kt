@@ -22,6 +22,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.Button
@@ -47,6 +49,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -58,8 +64,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.antigem.domain.model.AgentKind
 import ai.antigem.ui.components.MarkdownContent
+import ai.antigem.ui.components.a11yMinTouchTarget
 import ai.antigem.ui.components.accent
 import ai.antigem.ui.components.label
+import ai.antigem.ui.components.rememberTalkBackOn
+import ai.antigem.i18n.L
 
 private val AllowGreen: androidx.compose.ui.graphics.Color get() = ai.antigem.theme.AppColors.success
 private val DenyRed: androidx.compose.ui.graphics.Color get() = ai.antigem.theme.AppColors.danger
@@ -87,8 +96,8 @@ class ApprovalItem(
     val secondary: List<ApprovalChoice> = emptyList(),
     /** "Always allow…" menu. */
     val always: List<ApprovalChoice> = emptyList(),
-    val denyLabel: String = "Deny",
-    val denyPlaceholder: String = "Tell the agent what to do instead (optional)",
+    val denyLabel: String = L.agents.agentApproval.deny,
+    val denyPlaceholder: String = L.agents.agentApproval.tellTheAgentWhatToDo,
     val onDeny: (feedback: String?) -> Unit
 )
 
@@ -104,6 +113,7 @@ fun AgentApprovalPanel(
     onDenyAll: (() -> Unit)? = null
 ) {
     val item = items.firstOrNull() ?: return
+    ai.antigem.ui.components.FilterObscuredTouches() // an overlay can't tap "Allow" through this panel (Android 7–11)
     val accent = item.agent.accent()
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
@@ -123,6 +133,7 @@ fun AgentApprovalPanel(
 @Composable
 private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit)?, onDenyAll: (() -> Unit)?) {
     val accent = item.agent.accent()
+    val talkBackOn = rememberTalkBackOn()
     var denying by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf("") }
     var alwaysMenu by remember { mutableStateOf(false) }
@@ -137,7 +148,7 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
             ) { Icon(item.icon, null, tint = accent, modifier = Modifier.size(19.dp)) }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(item.title, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                Text(item.title, fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.semantics { heading() })
                 Text(
                     listOfNotNull(item.agent.label(), item.subtitle).joinToString(" · "),
                     fontSize = 11.5.sp,
@@ -148,7 +159,7 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
             }
             if (count > 1) {
                 Text(
-                    "1 of $count",
+                    L.agents.agentApproval.requestProgress(count),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
@@ -160,18 +171,18 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
             }
             if (count > 1 && (onAllowAll != null || onDenyAll != null)) {
                 Box {
-                    IconButton(onClick = { overflow = true }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Outlined.MoreVert, "More", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { overflow = true }, modifier = Modifier.a11yMinTouchTarget(talkBackOn).size(32.dp)) {
+                        Icon(Icons.Outlined.MoreVert, L.common.more, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
                     }
                     DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
                         onAllowAll?.let {
-                            DropdownMenuItem(text = { Text("Allow all $count") }, onClick = {
+                            DropdownMenuItem(text = { Text(L.agents.agentApproval.allowAllCount(count)) }, onClick = {
                                 overflow = false
                                 it()
                             })
                         }
                         onDenyAll?.let {
-                            DropdownMenuItem(text = { Text("Deny all $count", color = DenyRed) }, onClick = {
+                            DropdownMenuItem(text = { Text(L.agents.agentApproval.denyAllCount(count), color = DenyRed) }, onClick = {
                                 overflow = false
                                 it()
                             })
@@ -242,7 +253,7 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
                     maxLines = 4
                 )
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { denying = false }) { Text("Back") }
+                    TextButton(onClick = { denying = false }) { Text(L.common.back) }
                     Spacer(Modifier.width(6.dp))
                     Button(
                         onClick = { item.onDeny(feedback.trim().ifBlank { null }) },
@@ -260,7 +271,12 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = AllowGreen)
-                ) { Text(item.primary.label, fontWeight = FontWeight.SemiBold) }
+                ) {
+                    // fixed icons and colours: a language can't change what a button looks like (only English labels here)
+                    Icon(Icons.Outlined.Check, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(item.primary.label, fontWeight = FontWeight.SemiBold)
+                }
                 item.secondary.forEach { choice ->
                     Spacer(Modifier.height(6.dp))
                     OutlinedButton(onClick = choice.onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
@@ -268,13 +284,19 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
                     }
                 }
                 TextButton(onClick = { denying = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("${item.denyLabel}…", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                    Text(
+                        "${item.denyLabel}…",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        modifier = Modifier.clearAndSetSemantics { contentDescription = item.denyLabel }
+                    )
                 }
                 return@Column
             }
 
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = { denying = true }, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                    Icon(Icons.Outlined.Close, null, tint = DenyRed, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
                     Text(item.denyLabel, color = DenyRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(Modifier.weight(1f))
@@ -283,9 +305,11 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
                         OutlinedButton(
                             onClick = { alwaysMenu = true },
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(start = 12.dp, end = 6.dp)
+                            contentPadding = PaddingValues(start = 12.dp, end = 6.dp),
+                            // TalkBack: "Always allow options" rather than a bare "Always" (it opens the list of always-allow choices)
+                            modifier = Modifier.semantics { contentDescription = L.agents.agentApproval.alwaysAllowOptions }
                         ) {
-                            Text("Always…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                            Text(L.agents.agentApproval.always, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
                             Icon(Icons.Outlined.ExpandMore, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                         }
                         DropdownMenu(expanded = alwaysMenu, onDismissRequest = { alwaysMenu = false }) {
@@ -312,7 +336,11 @@ private fun ApprovalBody(item: ApprovalItem, count: Int, onAllowAll: (() -> Unit
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = AllowGreen),
                     contentPadding = PaddingValues(horizontal = 18.dp)
-                ) { Text(item.primary.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White) }
+                ) {
+                    Icon(Icons.Outlined.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(item.primary.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                }
             }
         }
     }

@@ -8,6 +8,7 @@ import ai.antigem.domain.model.ToolCall
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import ai.antigem.i18n.L
 
 /**
  * Universal domain parser for converting raw AGY/Cortex steps into UI ChatMessage,
@@ -134,7 +135,7 @@ object TrajectoryParser {
                                 val isImg = mime.startsWith("image/") || cleanPath.endsWith(".png", true) || cleanPath.endsWith(".jpg", true) || cleanPath.endsWith(".jpeg", true) || cleanPath.endsWith(".webp", true) || cleanPath.endsWith(".gif", true) || cleanPath.endsWith(".svg", true)
                                 val desc = mObj.optString("description", if (isAud) "Voice note" else if (isImg) "Image" else "Attachment")
                                 userAttachments.add(
-                                    ChatAttachment(
+                                    ai.antigem.data.media.InlineMediaStore.stored(ChatAttachment(
                                         id = "att_${conversationId}_${stepIndex}_$mIdx",
                                         name = desc,
                                         path = cleanPath,
@@ -143,7 +144,7 @@ object TrajectoryParser {
                                         durationSeconds = dur,
                                         mimeType = mime.ifBlank { if (isAud) "audio/mp4" else if (isImg) "image/jpeg" else "" },
                                         base64 = inline.ifBlank { null }
-                                    )
+                                    ))
                                 )
                             }
                         }
@@ -797,7 +798,7 @@ object TrajectoryParser {
             val mimeType = gm?.optString("mimeType", "image/jpeg")?.ifBlank { "image/jpeg" } ?: "image/jpeg"
             val inlineData = gm?.optString("inlineData", gm.optString("inline_data", "")) ?: ""
             val rawUri = gm?.optString("uri", "")?.ifBlank { gi.optString("uri", "") } ?: ""
-            val output = if (inlineData.isNotBlank()) "data:$mimeType;base64,$inlineData" else rawUri
+            val output = if (inlineData.isNotBlank()) ai.antigem.data.media.InlineMediaStore.storedDataUri("data:$mimeType;base64,$inlineData") else rawUri
             return ToolCall(
                 id = makeToolId("tool_genimg_"),
                 name = "generate_image",
@@ -840,11 +841,11 @@ object TrajectoryParser {
         val errorId = target.optString("errorId", "")
 
         val title = when {
-            shortError.contains("auth", ignoreCase = true) || userError.contains("auth", ignoreCase = true) -> "Authentication Required"
-            shortError.contains("quota", ignoreCase = true) || shortError.contains("credit", ignoreCase = true) || errorCode == 429 -> "Quota / Usage Limit Exceeded"
-            shortError.contains("model not found", ignoreCase = true) || shortError.contains("unknown model", ignoreCase = true) -> "Model Configuration Error"
-            shortError.contains("network", ignoreCase = true) || shortError.contains("connect", ignoreCase = true) -> "Network / Server Connection Error"
-            else -> "Agent Execution Error"
+            shortError.contains("auth", ignoreCase = true) || userError.contains("auth", ignoreCase = true) -> L.chat.trajectoryParser.authenticationRequired
+            shortError.contains("quota", ignoreCase = true) || shortError.contains("credit", ignoreCase = true) || errorCode == 429 -> L.chat.trajectoryParser.quotaUsageLimitExceeded
+            shortError.contains("model not found", ignoreCase = true) || shortError.contains("unknown model", ignoreCase = true) -> L.chat.trajectoryParser.modelConfigurationError
+            shortError.contains("network", ignoreCase = true) || shortError.contains("connect", ignoreCase = true) -> L.chat.trajectoryParser.networkServerConnectionError
+            else -> L.chat.trajectoryParser.agentExecutionError
         }
 
         return JSONObject().apply {
@@ -908,7 +909,7 @@ object TrajectoryParser {
         val stepType = step.optString("type", "")
         if (stepType.contains("ERROR", ignoreCase = true)) {
             val desc = step.optString("description", "").takeIf { it.isNotBlank() }
-            return desc ?: "Agent execution terminated due to error."
+            return desc ?: L.chat.trajectoryParser.agentExecutionTerminatedDueToError
         }
 
         val status = step.optString("status", "")

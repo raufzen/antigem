@@ -47,6 +47,8 @@ import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedDeque
 import kotlin.coroutines.resume
+import ai.antigem.i18n.L
+import kotlinx.coroutines.launch
 
 /**
  * Diagnostic Console Log entry captured from a live WebView tab.
@@ -260,6 +262,19 @@ private const val MAX_IN_PAGE_UPLOAD_BYTES = 25L * 1024 * 1024
  * interaction dispatching, and console log aggregation.
  */
 class BrowserSessionManager private constructor() {
+    /** LAN hosts whose certificate the user accepted, as "host|fingerprint" (until the app restarts). */
+    private val acceptedLanCerts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun sslFingerprint(error: android.net.http.SslError?): String {
+        val cert = error?.certificate ?: return ""
+        if (android.os.Build.VERSION.SDK_INT >= 29) cert.x509Certificate?.let { x ->
+            return java.security.MessageDigest.getInstance("SHA-256").digest(x.encoded).joinToString("") { "%02x".format(it) }
+        }
+        return listOf(cert.issuedTo?.dName, cert.issuedBy?.dName, cert.validNotBeforeDate?.time, cert.validNotAfterDate?.time).joinToString("|")
+    }
+
+    /** Asks before a page opens another app (item 36). */
+    private val confirmScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main)
 
     companion object {
         private const val TAG = "BrowserSessionManager"
@@ -416,7 +431,7 @@ class BrowserSessionManager private constructor() {
     )
 
     private val defaultShortcuts = listOf(
-        SpeedDialShortcut(id = "google", title = "Google", url = "https://www.google.com"),
+        SpeedDialShortcut(id = "google", title = L.browser.sessionManager.google, url = "https://www.google.com"),
         SpeedDialShortcut(id = "youtube", title = "YouTube", url = "https://www.youtube.com")
     )
 
@@ -584,7 +599,8 @@ class BrowserSessionManager private constructor() {
 
     fun init(context: Context) {
         appContext = context.applicationContext
-        WebView.setWebContentsDebuggingEnabled(true)
+        // no longer on for good: only while plugins, browser_mcp or REA use DevTools (WebDebug); debug builds keep it on
+        if (ai.antigem.BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         loadShortcutsIfNeeded(context)
     }
 
@@ -1057,7 +1073,7 @@ class BrowserSessionManager private constructor() {
                     val desc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         val descriptionStr = error?.description?.toString() ?: ""
                         if (descriptionStr.isNotBlank()) descriptionStr else "Network Error (${error?.errorCode})"
-                    } else "Network Connection Failure"
+                    } else L.browser.sessionManager.networkConnectionFailure
                     val reqUrl = request?.url?.toString() ?: tab.url
                     val isMain = request?.isForMainFrame ?: true
 
@@ -1079,7 +1095,7 @@ class BrowserSessionManager private constructor() {
                     super.onReceivedHttpError(view, request, errorResponse)
                     val reqUrl = request?.url?.toString() ?: tab.url
                     val status = errorResponse?.statusCode ?: 0
-                    val reason = errorResponse?.reasonPhrase ?: "HTTP Error"
+                    val reason = errorResponse?.reasonPhrase ?: L.browser.sessionManager.httpError
                     val isMain = request?.isForMainFrame ?: false
 
                     val err = BrowserNetworkError(
@@ -1098,20 +1114,52 @@ class BrowserSessionManager private constructor() {
 
                 override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: android.net.http.SslError?) {
                     val reqUrl = error?.url ?: tab.url
-                    val isLocal = reqUrl.contains("localhost") || reqUrl.contains("127.0.0.1") || reqUrl.contains("192.168.") || reqUrl.contains("10.0.")
-                    
-                    // For local development on localhost/127.0.0.1, automatically bypass self-signed SSL errors so dev servers load seamlessly
-                    if (isLocal) {
+                    // Match the parsed host exactly, never a substring of the whole URL: otherwise
+                    // e.g. https://cdn.example/lib/10.0.2/x.js or ?r=localhost would skip TLS checks.
+                    val host = try { Uri.parse(reqUrl).host?.lowercase() } catch (_: Exception) { null } ?: ""
+                    val isIpv4 = host.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$"))
+                    // loopback can't be intercepted from the network: local dev servers' self-signed certificates load
+                    if (host == "localhost" || host == "127.0.0.1") {
                         handler?.proceed()
+                        return
+                    }
+                    // a LAN address (router, NAS): the user decides, once per host and certificate, after seeing the problem
+                    val isLan = isIpv4 && (host.startsWith("192.168.") || host.startsWith("10.") ||
+                        Regex("^172\\.(1[6-9]|2\\d|3[01])\\.").containsMatchIn(host))
+                    if (isLan && handler != null) {
+                        val certKey = host + "|" + sslFingerprint(error)
+                        if (certKey in acceptedLanCerts) {
+                            handler.proceed()
+                            return
+                        }
+                        val problem = when (error?.primaryError) {
+                            android.net.http.SslError.SSL_UNTRUSTED -> L.browser.sessionManager.untrustedCertificateAuthoritySelfSigned
+                            android.net.http.SslError.SSL_EXPIRED -> L.browser.sessionManager.sslCertificateExpired
+                            android.net.http.SslError.SSL_IDMISMATCH -> L.browser.sessionManager.hostnameMismatch
+                            android.net.http.SslError.SSL_NOTYETVALID -> L.browser.sessionManager.certificateNotYetValid
+                            else -> L.browser.sessionManager.sslHandshakeSecurityFailure
+                        }
+                        confirmScope.launch {
+                            val ok = ai.antigem.data.security.UserConfirm.ask(
+                                context, L.browser.sessionManager.certificateProblemOnHost(host),
+                                L.browser.sessionManager.problemNNonYourOwnNetwork(problem), L.browser.sessionManager.continueToThisSite
+                            )
+                            if (ok) {
+                                acceptedLanCerts.add(certKey)
+                                handler.proceed()
+                            } else {
+                                handler.cancel()
+                            }
+                        }
                         return
                     }
 
                     val primaryMsg = when (error?.primaryError) {
-                        android.net.http.SslError.SSL_UNTRUSTED -> "Untrusted Certificate Authority (Self-signed or invalid CA)"
-                        android.net.http.SslError.SSL_EXPIRED -> "SSL Certificate Expired"
-                        android.net.http.SslError.SSL_IDMISMATCH -> "Hostname Mismatch"
-                        android.net.http.SslError.SSL_NOTYETVALID -> "Certificate Not Yet Valid"
-                        else -> "SSL Handshake / Security Failure"
+                        android.net.http.SslError.SSL_UNTRUSTED -> L.browser.sessionManager.untrustedCertificateAuthoritySelfSigned
+                        android.net.http.SslError.SSL_EXPIRED -> L.browser.sessionManager.sslCertificateExpired
+                        android.net.http.SslError.SSL_IDMISMATCH -> L.browser.sessionManager.hostnameMismatch
+                        android.net.http.SslError.SSL_NOTYETVALID -> L.browser.sessionManager.certificateNotYetValid
+                        else -> L.browser.sessionManager.sslHandshakeSecurityFailure
                     }
                     val err = BrowserNetworkError(
                         url = reqUrl,
@@ -1128,7 +1176,7 @@ class BrowserSessionManager private constructor() {
 
                 override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
                     val didCrash = detail?.didCrash() == true
-                    val msg = if (didCrash) "WebView render process crashed unexpectedly." else "WebView render process was terminated by OS (Memory Pressure)."
+                    val msg = if (didCrash) L.browser.sessionManager.webviewRenderProcessCrashedUnexpectedly else L.browser.sessionManager.webviewRenderProcessWasTerminatedBy
                     val err = BrowserNetworkError(
                         url = tab.url,
                         errorCode = -1,
@@ -1190,14 +1238,19 @@ class BrowserSessionManager private constructor() {
                         }
                         return false
                     }
-                    return try {
-                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                        true
-                    } catch (_: Exception) {
-                        false
+                    // another app (tel:, market:, antigem-miniapp:, …) only from the page itself, on the user's tap (or a
+                    // redirect right after one), and after the user agrees: a page or an iframe can't launch apps alone
+                    if (!request.isForMainFrame || !(request.hasGesture() || request.isRedirect)) return true
+                    confirmScope.launch {
+                        val ok = ai.antigem.data.security.UserConfirm.ask(
+                            context, L.browser.sessionManager.openInAnotherApp,
+                            L.browser.sessionManager.thePageWantsToOpenThis(uri.toString().take(300)), L.common.open
+                        )
+                        if (ok) runCatching {
+                            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
                     }
+                    return true
                 }
             }
 
@@ -1916,7 +1969,7 @@ class BrowserSessionManager private constructor() {
                 ?: error("Tab not found")
             val wv = tab.webView ?: error("WebView not initialized for tab")
             val located = JSONObject(evaluateJs(tab.id, uploadLocateScript(selector, x, y, fx, fy)).getOrThrow())
-            require(located.optBoolean("ok")) { located.optString("error").ifBlank { "Could not find the upload element" } }
+            require(located.optBoolean("ok")) { located.optString("error").ifBlank { L.browser.sessionManager.couldNotFindTheUploadElement } }
             val result = JSONObject().put("files", JSONArray(files.map { it.name })).put("target", located.optString("tag"))
                 .put("file_input", located.optBoolean("file_input"))
             try {
@@ -1948,7 +2001,7 @@ class BrowserSessionManager private constructor() {
                         .put("data", android.util.Base64.encodeToString(file.readBytes(), android.util.Base64.NO_WRAP))
                 })
                 val done = JSONObject(evaluateJs(tab.id, uploadInPageScript(payload)).getOrThrow())
-                require(done.optBoolean("ok")) { done.optString("error").ifBlank { "In-page upload failed" } }
+                require(done.optBoolean("ok")) { done.optString("error").ifBlank { L.browser.sessionManager.inPageUploadFailed } }
                 result.put("method", done.getString("method")).put("given", done.getInt("given"))
                     .put("note", "No file chooser opened; the files were built inside the page. Some sites ignore that, so check the page shows them.")
             } finally {

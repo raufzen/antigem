@@ -1,7 +1,7 @@
 package ai.antigem.ui.opencode
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,8 +47,11 @@ import ai.antigem.data.agent.opencode.OpenCodeChatBackend
 import ai.antigem.domain.model.AgentKind
 import ai.antigem.ui.agents.AgentSheetHeader
 import ai.antigem.ui.components.OpenCodeAccent
+import ai.antigem.ui.models.ProviderChip
+import ai.antigem.ui.models.ProviderFilterRow
+import ai.antigem.i18n.L
 
-/** OpenCode's model picker: every model of the connected providers, grouped by provider, with search. */
+/** OpenCode's model picker: every model of the connected providers, grouped by provider, with provider chips and search. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OpenCodeModelSheet(backend: OpenCodeChatBackend, onOpenSettings: () -> Unit, onDismiss: () -> Unit) {
@@ -56,6 +60,8 @@ fun OpenCodeModelSheet(backend: OpenCodeChatBackend, onOpenSettings: () -> Unit,
     val refreshing by backend.isRefreshingModels.collectAsState()
     val error by backend.modelsError.collectAsState()
     var query by remember { mutableStateOf("") }
+    // the provider chip last picked (blank = All); a provider that is gone or hidden shows All
+    var filter by remember { mutableStateOf(backend.prefs.pickerProvider()) }
     LaunchedEffect(Unit) { backend.refreshModels() }
 
     ModalBottomSheet(
@@ -68,7 +74,7 @@ fun OpenCodeModelSheet(backend: OpenCodeChatBackend, onOpenSettings: () -> Unit,
         Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 16.dp).navigationBarsPadding()) {
             AgentSheetHeader(
                 AgentKind.OPENCODE,
-                title = "Select model",
+                title = L.common.selectModel,
                 detail = if (models.isNotEmpty()) "${models.size} models" else null,
                 refreshing = refreshing,
                 onRefresh = { backend.refreshModels() }
@@ -77,14 +83,29 @@ fun OpenCodeModelSheet(backend: OpenCodeChatBackend, onOpenSettings: () -> Unit,
             if (models.size > 8) {
                 OutlinedTextField(
                     value = query, onValueChange = { query = it }, singleLine = true,
-                    leadingIcon = { Icon(Icons.Outlined.Search, null) }, placeholder = { Text("Search models or providers") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, null) }, placeholder = { Text(L.opencode.model.searchModelsOrProviders) },
                     shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
             }
+            // one chip per provider (in the list's order), shown once there are two; the search looks inside the picked one
+            val byProvider = models.groupBy { it.id.substringBefore('/') }
+            val chips = if (byProvider.size < 2) emptyList() else {
+                listOf(ProviderChip("", L.models.providerFilter.all, models.size)) +
+                    byProvider.map { (id, list) -> ProviderChip(id, list.first().baseName.ifBlank { id }, list.size, list.any { it.id == selected }) }
+            }
+            val shownProvider = filter.takeIf { f -> chips.any { it.key == f } }.orEmpty()
+            if (chips.isNotEmpty()) {
+                ProviderFilterRow(chips, shownProvider, OpenCodeAccent) {
+                    filter = it
+                    backend.prefs.setPickerProvider(it)
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             error?.let { Text(it, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 6.dp)) }
             val shown = models.filter {
-                query.isBlank() || it.displayName.contains(query, true) || it.id.contains(query, true) || it.description.contains(query, true)
+                (shownProvider.isEmpty() || it.id.substringBefore('/') == shownProvider) &&
+                    (query.isBlank() || it.displayName.contains(query, true) || it.id.contains(query, true) || it.description.contains(query, true))
             }
             val groups = shown.groupBy { it.baseName.ifBlank { it.id.substringBefore('/') } }
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
@@ -102,7 +123,8 @@ fun OpenCodeModelSheet(backend: OpenCodeChatBackend, onOpenSettings: () -> Unit,
                             shape = RoundedCornerShape(14.dp),
                             color = if (isOn) OpenCodeAccent.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface,
                             border = BorderStroke(1.dp, if (isOn) OpenCodeAccent.copy(alpha = 0.6f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(14.dp)).clickable {
+                            // selectable: TalkBack says "Selected" / "Not selected" (same tap and ripple as clickable)
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(14.dp)).selectable(selected = isOn, role = Role.RadioButton) {
                                 backend.selectModel(m.id)
                                 onDismiss()
                             }
@@ -125,7 +147,7 @@ fun OpenCodeModelSheet(backend: OpenCodeChatBackend, onOpenSettings: () -> Unit,
             TextButton(onClick = { onDismiss(); onOpenSettings() }) {
                 Icon(Icons.Outlined.Settings, null, Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("Connect providers or add an OpenAI-compatible endpoint")
+                Text(L.opencode.model.connectProvidersOrAddAnOpenai)
             }
         }
     }

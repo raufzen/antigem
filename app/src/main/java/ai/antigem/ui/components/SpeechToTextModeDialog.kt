@@ -3,6 +3,7 @@ package ai.antigem.ui.components
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import ai.antigem.theme.ClaudeTerracotta
 import ai.antigem.theme.GeminiBlue
+import ai.antigem.i18n.L
 
 @Composable
 fun SpeechToTextModeDialog(
@@ -50,14 +52,14 @@ fun SpeechToTextModeDialog(
                 ) {
                     Column {
                         Text(
-                            text = "Speech to Text",
+                            text = L.components.speechToTextMode.speechToText,
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Select speech recognition method",
+                            text = L.components.speechToTextMode.selectSpeechRecognitionMethod,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
@@ -69,7 +71,7 @@ fun SpeechToTextModeDialog(
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.Close,
-                            contentDescription = "Close",
+                            contentDescription = L.common.close,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                             modifier = Modifier.size(16.dp)
                         )
@@ -80,8 +82,8 @@ fun SpeechToTextModeDialog(
 
                 // Option 1: Auto Transcribe (Record & Transcribe via AGY Hub)
                 SpeechModeOptionCard(
-                    title = "Auto Transcribe",
-                    subtitle = "Record a voice clip and convert it into text using AGY transcription",
+                    title = L.components.speechToTextMode.autoTranscribe,
+                    subtitle = L.components.speechToTextMode.recordAVoiceClipAndConvert,
                     icon = Icons.Rounded.GraphicEq,
                     accentColor = ClaudeTerracotta,
                     onClick = onSelectAutoTranscribe
@@ -91,8 +93,8 @@ fun SpeechToTextModeDialog(
 
                 // Option 2: Live Dictation (Real-Time Speech-to-Text)
                 SpeechModeOptionCard(
-                    title = "Live Dictation",
-                    subtitle = "Stream words in real-time as you speak directly into the chat prompt",
+                    title = L.components.speechToTextMode.liveDictation,
+                    subtitle = L.components.speechToTextMode.streamWordsInRealTimeAs,
                     icon = Icons.Rounded.Mic,
                     accentColor = GeminiBlue,
                     onClick = onSelectLiveDictation
@@ -106,7 +108,7 @@ fun SpeechToTextModeDialog(
                     modifier = Modifier.align(Alignment.End)
                 ) {
                     Text(
-                        text = "Cancel",
+                        text = L.common.cancel,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                         fontSize = 13.sp
                     )
@@ -131,7 +133,7 @@ private fun SpeechModeOptionCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
     ) {
         Row(
             modifier = Modifier.padding(14.dp),

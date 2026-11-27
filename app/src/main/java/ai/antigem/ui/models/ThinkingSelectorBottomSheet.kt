@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -16,6 +18,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -26,6 +31,7 @@ import ai.antigem.domain.model.ThinkingLevel
 import ai.antigem.domain.model.ThinkingPreference
 import ai.antigem.theme.ClaudeDarkSurface
 import ai.antigem.theme.ClaudeTerracotta
+import ai.antigem.i18n.L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +45,8 @@ fun ThinkingSelectorBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        // full height while TalkBack is on (half height as before otherwise)
+        sheetState = ai.antigem.ui.components.rememberSheetStateFullUnderTalkBack(),
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
         dragHandle = { BottomSheetDefaults.DragHandle() },
@@ -47,6 +55,8 @@ fun ThinkingSelectorBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // scrolls only when it doesn't fit (very large font sizes)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 32.dp)
         ) {
@@ -64,13 +74,14 @@ fun ThinkingSelectorBottomSheet(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = "Thinking & Reasoning Level",
+                        text = L.models.thinkingSelectorBottom.thinkingReasoningLevel,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.semantics { heading() }
                     )
                     Text(
-                        text = "Configure reasoning depth and token budget",
+                        text = L.models.thinkingSelectorBottom.configureReasoningDepthAndTokenBudget,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
@@ -92,6 +103,8 @@ fun ThinkingSelectorBottomSheet(
                         .fillMaxWidth()
                         .padding(vertical = 5.dp)
                         .clip(RoundedCornerShape(14.dp))
+                        // TalkBack: "Selected" / "Not selected"
+                        .semantics { selected = isSelected }
                         .clickable {
                             selectedLevel = level
                             if (level != ThinkingLevel.CUSTOM) {
@@ -128,7 +141,7 @@ fun ThinkingSelectorBottomSheet(
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = "DEFAULT",
+                                        text = L.models.thinkingSelectorBottom.default,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = ClaudeTerracotta
@@ -141,7 +154,8 @@ fun ThinkingSelectorBottomSheet(
                             if (isSelected) {
                                 Icon(
                                     imageVector = Icons.Outlined.Check,
-                                    contentDescription = "Selected",
+                                    // the card already says "Selected"
+                                    contentDescription = null,
                                     tint = ClaudeTerracotta,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -162,15 +176,15 @@ fun ThinkingSelectorBottomSheet(
                             OutlinedTextField(
                                 value = customTokensText,
                                 onValueChange = { customTokensText = it.filter { char -> char.isDigit() } },
-                                label = { Text("Token Budget (1 - 32,768)") },
-                                placeholder = { Text("e.g. 2048") },
+                                label = { Text(L.models.thinkingSelectorBottom.tokenBudget132768) },
+                                placeholder = { Text(L.models.thinkingSelectorBottom.eG2048) },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth(),
                                 supportingText = {
                                     val tokens = customTokensText.toIntOrNull() ?: 0
                                     val chars = tokens * 4
-                                    Text("Allocates ~$chars characters of reasoning capacity")
+                                    Text(L.models.thinkingSelectorBottom.allocatesCharsCharactersOfReasoning(chars))
                                 }
                             )
 
@@ -186,7 +200,7 @@ fun ThinkingSelectorBottomSheet(
                                 colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
-                                Text("Apply Custom Budget", fontWeight = FontWeight.Bold)
+                                Text(L.models.thinkingSelectorBottom.applyCustomBudget, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import ai.antigem.R
 import java.io.File
+import ai.antigem.i18n.L
 
 open class TermuxOpenReceiver : BroadcastReceiver() {
 
@@ -62,7 +63,7 @@ open class TermuxOpenReceiver : BroadcastReceiver() {
                     urlIntent
                 }
 
-                launchSafely(context, finalIntent, "Open Link", data.toString())
+                launchSafely(context, finalIntent, L.receiver.termuxOpenReceiver.openLink, data.toString())
                 return
             }
 
@@ -76,7 +77,7 @@ open class TermuxOpenReceiver : BroadcastReceiver() {
             val fileToShare = File(rawPath)
             if (!fileToShare.exists() || !fileToShare.canRead()) {
                 Log.w(TAG, "Not a readable file: ${fileToShare.absolutePath}")
-                Toast.makeText(context, "File not found or unreadable: ${fileToShare.name}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, L.receiver.termuxOpenReceiver.fileNotFoundOrUnreadableName(fileToShare.name), Toast.LENGTH_SHORT).show()
                 return
             }
 
@@ -111,12 +112,13 @@ open class TermuxOpenReceiver : BroadcastReceiver() {
             }
 
             val finalIntent = if (useChooser) {
-                Intent.createChooser(openIntent, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                // AntiGem's own screens would refuse its own file from a chooser: they are left out
+                ai.antigem.data.files.IncomingUriGuard.chooser(context, openIntent, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             } else {
                 openIntent
             }
 
-            launchSafely(context, finalIntent, "Open File: ${fileToShare.name}", fileToShare.absolutePath)
+            launchSafely(context, finalIntent, L.receiver.termuxOpenReceiver.openFileName(fileToShare.name), fileToShare.absolutePath)
         }
 
         private fun launchSafely(context: Context, intent: Intent, title: String, description: String) {
@@ -128,7 +130,7 @@ open class TermuxOpenReceiver : BroadcastReceiver() {
                     return
                 } catch (e: ActivityNotFoundException) {
                     Log.w(TAG, "No app handles intent: ${e.message}")
-                    Toast.makeText(foregroundActivity, "No application found to handle this request", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(foregroundActivity, L.receiver.termuxOpenReceiver.noApplicationFoundToHandleThis, Toast.LENGTH_SHORT).show()
                     return
                 } catch (e: Exception) {
                     Log.w(TAG, "Activity.startActivity failed: ${e.message}")
@@ -168,7 +170,7 @@ open class TermuxOpenReceiver : BroadcastReceiver() {
                     context.startActivity(intent, optionsBundle)
                 } catch (e: ActivityNotFoundException) {
                     Log.w(TAG, "No app handles intent: ${e.message}")
-                    Toast.makeText(context, "No application found to handle this request", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, L.receiver.termuxOpenReceiver.noApplicationFoundToHandleThis, Toast.LENGTH_SHORT).show()
                     return
                 } catch (e: Exception) {
                     Log.w(TAG, "Direct startActivity failed: ${e.message}")
@@ -185,7 +187,7 @@ open class TermuxOpenReceiver : BroadcastReceiver() {
                             "Termux Open",
                             NotificationManager.IMPORTANCE_HIGH
                         ).apply {
-                            this.description = "Terminal open requests"
+                            this.description = L.receiver.termuxOpenReceiver.terminalOpenRequests
                             enableLights(true)
                             enableVibration(true)
                         }

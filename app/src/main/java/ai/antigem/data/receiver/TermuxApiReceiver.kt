@@ -27,6 +27,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.Socket
 import java.util.Locale
+import ai.antigem.i18n.L
 
 class TermuxApiReceiver : BroadcastReceiver() {
 
@@ -42,6 +43,9 @@ class TermuxApiReceiver : BroadcastReceiver() {
         private const val TAG = "TermuxApiReceiver"
         private const val API_NOTIFICATION_CHANNEL_ID = "antigem_termux_api_notifications"
         private var ttsInstance: TextToSpeech? = null
+        private var ttsReady = false
+        // the latest text sent while the engine is still starting (QUEUE_FLUSH: a newer text replaces it)
+        private var ttsPendingText: String? = null
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
@@ -165,12 +169,27 @@ class TermuxApiReceiver : BroadcastReceiver() {
         val text = intent.getStringExtra("text") ?: intent.getStringExtra("message") ?: return
         Handler(Looper.getMainLooper()).post {
             if (ttsInstance == null) {
-                ttsInstance = TextToSpeech(context.applicationContext) { status ->
+                ttsPendingText = text
+                var initFailed = false
+                val engine = TextToSpeech(context.applicationContext) { status ->
+                    val pending = ttsPendingText
+                    ttsPendingText = null
                     if (status == TextToSpeech.SUCCESS) {
+                        ttsReady = true
                         ttsInstance?.language = Locale.getDefault()
-                        ttsInstance?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "termux_tts")
+                        pending?.let { ttsInstance?.speak(it, TextToSpeech.QUEUE_FLUSH, null, "termux_tts") }
+                    } else {
+                        initFailed = true
+                        // drop the failed engine so the next call starts a new one
+                        runCatching { ttsInstance?.shutdown() }
+                        ttsInstance = null
                     }
                 }
+                // with no TTS engine installed, onInit(ERROR) runs inside the constructor, before ttsInstance is set:
+                // shut that engine down here instead of keeping a dead instance
+                if (initFailed) runCatching { engine.shutdown() } else ttsInstance = engine
+            } else if (!ttsReady) {
+                ttsPendingText = text
             } else {
                 ttsInstance?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "termux_tts")
             }
@@ -180,7 +199,7 @@ class TermuxApiReceiver : BroadcastReceiver() {
     private fun handleNotification(context: Context, intent: Intent) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
         val id = intent.getIntExtra("id", 4242)
-        val title = intent.getStringExtra("title") ?: "Termux Notification"
+        val title = intent.getStringExtra("title") ?: L.receiver.termuxApiReceiver.termuxNotification
         val content = intent.getStringExtra("content") ?: intent.getStringExtra("text") ?: ""
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

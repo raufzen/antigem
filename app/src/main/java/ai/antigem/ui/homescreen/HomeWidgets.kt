@@ -1,42 +1,41 @@
 package ai.antigem.ui.homescreen
 
-import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
-import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
-import androidx.glance.appwidget.state.updateAppWidgetState
 import androidx.glance.appwidget.updateAll
 import ai.antigem.BuildConfig
 import ai.antigem.data.homescreen.HomeScripts
+import ai.antigem.data.homescreen.HomeSnapshot
+import ai.antigem.data.voice.VoiceCallLauncher
 import ai.antigem.data.preferences.AuthPreferences
-import ai.antigem.domain.model.AgentKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import ai.antigem.i18n.L
 
-/** AntiGem's four home-screen widgets. */
-enum class WidgetKind(val title: String, val description: String, val receiver: Class<out GlanceAppWidgetReceiver>) {
-    CHATS("Chats", "Your newest or pinned chats, live: what's working and what's done. Tap one to open it; + starts a new chat.", ChatsWidgetReceiver::class.java),
-    ACTIONS("Quick actions", "One-tap buttons you choose: new chats, Terminal, Browser, Code, Files, Notes, Run, Voice call, Jarvis…", ActionsWidgetReceiver::class.java),
-    CHAT("One chat", "A single chat: its status and latest reply, with Open and Reply.", ChatWidgetReceiver::class.java),
-    SCRIPTS("Scripts", "Your scripts from ~/.shortcuts, like Termux:Widget: in a terminal tab, or in the background from ~/.shortcuts/tasks.", ScriptsWidgetReceiver::class.java);
+/** AntiGem's three home-screen widgets. */
+enum class WidgetKind(private val titleText: () -> String, private val descriptionText: () -> String, val receiver: Class<out GlanceAppWidgetReceiver>) {
+    CHATS({ L.homescreen.homeWidgets.chats }, { L.homescreen.homeWidgets.yourNewestOrPinnedChatsLive }, ChatsWidgetReceiver::class.java),
+    ACTIONS({ L.homescreen.homeWidgets.quickActions }, { L.homescreen.homeWidgets.oneTapButtonsYouChooseNew }, ActionsWidgetReceiver::class.java),
+    SCRIPTS({ L.homescreen.homeWidgets.scripts }, { L.homescreen.homeWidgets.yourScriptsFromShortcutsLikeTermux }, ScriptsWidgetReceiver::class.java);
+    val title: String get() = titleText()
+    val description: String get() = descriptionText()
 
     fun widget(): GlanceAppWidget = when (this) {
         CHATS -> ChatsWidget()
         ACTIONS -> ActionsWidget()
-        CHAT -> ChatWidget()
         SCRIPTS -> ScriptsWidget()
     }
 
@@ -57,35 +56,42 @@ object HomeWidgets {
     /** Bumped to redraw every widget (settings or theme changed). */
     val version: StateFlow<Int> = _version.asStateFlow()
 
-    private val _watched = MutableStateFlow<Set<String>>(emptySet())
-    /** The chats the One chat widgets show (the saved chat list always keeps them). */
-    val watched: StateFlow<Set<String>> = _watched.asStateFlow()
-
     @Volatile private var themeModeCache: String? = null
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences("home_widgets", Context.MODE_PRIVATE)
-
-    @Volatile private var inited = false
-
-    fun init(context: Context) {
-        if (inited) return
-        inited = true
-        _watched.value = prefs(context).all.filterKeys { it.startsWith("chat_of_") }.values.mapNotNull { it as? String }.toSet()
-    }
 
     /** The app's light / dark mode ("LIGHT", "DARK", or the phone's). */
     fun themeMode(context: Context): String =
         themeModeCache ?: runCatching { AuthPreferences(context.applicationContext).getThemeModeSync() }.getOrDefault("SYSTEM")
             .also { themeModeCache = it }
 
-    /** The saved chat list changed. */
-    fun onChatsChanged(context: Context, listChanged: Boolean) {
+    /** The Chats widget is waiting to be redrawn. */
+    private val pending = MutableStateFlow(false)
+    private val refreshLoop = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * The saved chat list changed. The Chats widget is redrawn by one loop: at once while the app is not on screen;
+     * while it is, not at all (the widgets can't be seen then) until the app leaves the screen, and then at once with
+     * the newest data. Changes that come meanwhile are merged into one redraw; none is lost.
+     *
+     * Why not while the app is on screen: Glance builds a widget on the main thread, 80-130 ms in a debug build, and
+     * after each redraw it went on re-processing the widget for several seconds by itself (measured: 18 times in 9 s
+     * after one redraw), which made the chat stutter while a reply streamed. In split-screen or a floating window
+     * with the home screen visible, the widgets catch up when the app leaves the screen.
+     */
+    fun onChatsChanged(context: Context) {
         val app = context.applicationContext
+        pending.value = true
+        if (!refreshLoop.compareAndSet(false, true)) return
         scope.launch {
-            runCatching {
-                if (listChanged) ChatsWidget().updateAll(app)
-                ChatWidget().updateAll(app)
-            }.onFailure { Log.w(TAG, "update: ${it.message}") }
+            while (true) {
+                pending.first { it }
+                // the app is on screen: wait until it leaves it
+                VoiceCallLauncher.appVisible.first { !it }
+                pending.value = false
+                HomeSnapshot.publishToWidgets()
+                runCatching { ChatsWidget().updateAll(app) }.onFailure { Log.w(TAG, "update: ${it.message}") }
+            }
         }
     }
 
@@ -94,6 +100,8 @@ object HomeWidgets {
         themeModeCache = null
         _version.value++
         val app = context.applicationContext
+        // the look changed: every widget is redrawn now, with the newest data
+        HomeSnapshot.publishToWidgets()
         scope.launch {
             WidgetKind.entries.forEach { k -> runCatching { k.widget().updateAll(app) } }
         }
@@ -112,66 +120,13 @@ object HomeWidgets {
     fun canPin(context: Context): Boolean = Build.VERSION.SDK_INT >= 26 &&
         runCatching { AppWidgetManager.getInstance(context).isRequestPinAppWidgetSupported }.getOrDefault(false)
 
-    /** Asks the launcher to place a [kind] widget. A One chat widget shows [chat] (id, agent, title). */
-    fun pin(context: Context, kind: WidgetKind, chat: Triple<String, AgentKind, String>? = null) {
+    /** Asks the launcher to place a [kind] widget. */
+    fun pin(context: Context, kind: WidgetKind) {
         val app = context.applicationContext
-        if (chat != null) setPendingChat(app, chat)
         scope.launch {
-            runCatching {
-                val callback = chat?.let {
-                    PendingIntent.getBroadcast(
-                        app, it.first.hashCode(),
-                        Intent(app, HomeWidgetPinReceiver::class.java)
-                            .putExtra(EXTRA_CHAT_ID, it.first)
-                            .putExtra(EXTRA_CHAT_AGENT, it.second.name)
-                            .putExtra(EXTRA_CHAT_TITLE, it.third),
-                        // the launcher adds the new widget's id to it
-                        PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
-                    )
-                }
-                GlanceAppWidgetManager(app).requestPinGlanceAppWidget(kind.receiver, successCallback = callback)
-            }.onFailure { Log.w(TAG, "pin: ${it.message}") }
+            runCatching { GlanceAppWidgetManager(app).requestPinGlanceAppWidget(kind.receiver) }
+                .onFailure { Log.w(TAG, "pin: ${it.message}") }
         }
-    }
-
-    /** A One chat widget now shows this chat. */
-    suspend fun applyChat(context: Context, appWidgetId: Int, id: String, agent: String, title: String) {
-        val app = context.applicationContext
-        val gid = GlanceAppWidgetManager(app).getGlanceIdBy(appWidgetId)
-        updateAppWidgetState(app, gid) { p ->
-            p[ChatWidget.KEY_ID] = id
-            p[ChatWidget.KEY_AGENT] = agent
-            p[ChatWidget.KEY_TITLE] = title
-        }
-        init(app)
-        prefs(app).edit().putString("chat_of_$appWidgetId", id).apply()
-        _watched.value = _watched.value + id
-        ChatWidget().update(app, gid)
-    }
-
-    /** A One chat widget was removed. */
-    fun forget(context: Context, appWidgetId: Int) {
-        val p = prefs(context)
-        p.edit().remove("chat_of_$appWidgetId").apply()
-        _watched.value = p.all.filterKeys { it.startsWith("chat_of_") }.values.mapNotNull { it as? String }.toSet()
-    }
-
-    // the chat a One chat widget placed from the app will show: its setup screen (if the launcher opens it) takes it
-    private fun setPendingChat(context: Context, chat: Triple<String, AgentKind, String>) {
-        prefs(context).edit()
-            .putString("pending_id", chat.first).putString("pending_agent", chat.second.name)
-            .putString("pending_title", chat.third).putLong("pending_at", System.currentTimeMillis())
-            .apply()
-    }
-
-    /** The chat just asked for from the app (at most 3 minutes ago), taken once. */
-    fun takePendingChat(context: Context): Triple<String, String, String>? {
-        val p = prefs(context)
-        val at = p.getLong("pending_at", 0L)
-        val id = p.getString("pending_id", null)
-        p.edit().remove("pending_at").remove("pending_id").remove("pending_agent").remove("pending_title").apply()
-        if (id == null || System.currentTimeMillis() - at > 3 * 60_000L) return null
-        return Triple(id, p.getString("pending_agent", null) ?: AgentKind.AGY.name, p.getString("pending_title", null) ?: "")
     }
 
     /**
@@ -189,31 +144,6 @@ object HomeWidgets {
                 WidgetKind.entries.forEach { k -> m.setWidgetPreviews(k.receiver.kotlin) }
                 p.edit().putInt("previews_version", BuildConfig.VERSION_CODE).apply()
             }.onFailure { Log.w(TAG, "previews: ${it.message}") }
-        }
-    }
-
-    const val EXTRA_CHAT_ID = "ai.antigem.widget.CHAT_ID"
-    const val EXTRA_CHAT_AGENT = "ai.antigem.widget.CHAT_AGENT"
-    const val EXTRA_CHAT_TITLE = "ai.antigem.widget.CHAT_TITLE"
-}
-
-/** The launcher placed a One chat widget the app asked for: it shows the chat picked in the app. */
-class HomeWidgetPinReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val widgetId = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
-        val id = intent.getStringExtra(HomeWidgets.EXTRA_CHAT_ID) ?: return
-        if (widgetId == AppWidgetManager.INVALID_APPWIDGET_ID) return
-        val agent = intent.getStringExtra(HomeWidgets.EXTRA_CHAT_AGENT) ?: AgentKind.AGY.name
-        val title = intent.getStringExtra(HomeWidgets.EXTRA_CHAT_TITLE).orEmpty()
-        val pending = goAsync()
-        CoroutineScope(Dispatchers.Default).launch {
-            try {
-                HomeWidgets.applyChat(context, widgetId, id, agent, title)
-            } catch (e: Exception) {
-                Log.w("HomeWidgets", "pin callback: ${e.message}")
-            } finally {
-                pending.finish()
-            }
         }
     }
 }

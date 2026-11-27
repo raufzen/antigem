@@ -30,6 +30,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -38,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import ai.antigem.domain.model.AgentKind
 import ai.antigem.ui.components.accent
 import ai.antigem.ui.components.label
+import ai.antigem.i18n.L
 
 /** Sheet header shared by both agents' pickers: agent mark, title, "Agent · detail" line, refresh. */
 @Composable
@@ -55,7 +60,7 @@ fun AgentSheetHeader(
         AgentMark(agent, size = 36.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+            Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.semantics { heading() })
             Text(
                 listOfNotNull(agent.label(), detail).joinToString(" · "),
                 fontSize = 12.sp,
@@ -71,7 +76,7 @@ fun AgentSheetHeader(
                     .animateFloat(0f, 360f, infiniteRepeatable(tween(800, easing = LinearEasing), RepeatMode.Restart), label = "sheet_refresh_angle").value
             } else 0f
             IconButton(onClick = onRefresh, enabled = !refreshing, modifier = Modifier.size(38.dp)) {
-                Icon(Icons.Outlined.Refresh, "Refresh", tint = agent.accent(), modifier = Modifier.size(20.dp).rotate(angle))
+                Icon(Icons.Outlined.Refresh, L.common.refresh, tint = agent.accent(), modifier = Modifier.size(20.dp).rotate(angle))
             }
         }
     }
@@ -86,7 +91,7 @@ fun SheetSectionLabel(text: String, modifier: Modifier = Modifier, trailing: Str
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f).semantics { heading() }
         )
         trailing?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)) }
     }
@@ -106,7 +111,8 @@ fun <T> SegmentedSelector(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-            .padding(3.dp),
+            .padding(3.dp)
+            .selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         options.forEach { (value, text) ->
@@ -115,7 +121,8 @@ fun <T> SegmentedSelector(
                 onClick = { onSelect(value) },
                 shape = RoundedCornerShape(9.dp),
                 color = if (isOn) accent else Color.Transparent,
-                modifier = Modifier.weight(1f)
+                // TalkBack: "Selected" / "Not selected"
+                modifier = Modifier.weight(1f).semantics { this.selected = isOn }
             ) {
                 Box(Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
                     Text(

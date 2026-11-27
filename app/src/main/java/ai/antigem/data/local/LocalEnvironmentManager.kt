@@ -25,14 +25,13 @@ import org.apache.commons.compress.archivers.ar.ArArchiveEntry
 import org.apache.commons.compress.archivers.ar.ArArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
-import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
-import org.apache.commons.compress.archivers.zip.ZipFile as CommonsZipFile
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
 import java.io.*
 import java.text.DecimalFormat
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
+import ai.antigem.i18n.L
 
 data class LocalCommandResult(
     val exitCode: Int,
@@ -69,6 +68,9 @@ object LocalEnvironmentManager {
     private const val BOOTSTRAP_VERSION = "2026.08"
     // Minimum 10 MB required for a real Termux bootstrap archive
     private const val MIN_BOOTSTRAP_SIZE_BYTES = 10 * 1024 * 1024L
+    /** Unpacked size per archive byte, for an archive whose unpacked size can't be read (the rootfs ZIPs are ~3.1). */
+    private const val UNPACK_RATIO = 3.2
+    private val ENV_LABEL get() = L.local.environmentManager.theLinuxEnvironment
 
     /** The full rootfs is per CPU: arm64 (GitHub + Hugging Face) and x86_64 (GitHub only for now), both in rootfs-v2. */
     private val IS_X86_64: Boolean = ai.antigem.BuildConfig.TARGET_ABI == "x86_64"
@@ -76,6 +78,13 @@ object LocalEnvironmentManager {
     val HARDCODED_ROOTFS_ASSET: String = if (IS_X86_64) "bootrapz_x86_64_2026-11-20.zip" else "bootrapz_2026-11-19.zip"
     val HARDCODED_ROOTFS_URL: String = "https://github.com/Santoshkurmi/antigem/releases/download/$HARDCODED_ROOTFS_TAG/$HARDCODED_ROOTFS_ASSET"
     val HARDCODED_ROOTFS_SIZE_BYTES: Long = if (IS_X86_64) 419_473_812L else 400_054_861L
+    /**
+     * sha256 of [HARDCODED_ROOTFS_ASSET] (GitHub's digest of the release asset; the Hugging Face copy is the same file).
+     * A download that differs is refused: TLS alone would trust whoever controls either account.
+     */
+    val HARDCODED_ROOTFS_SHA256: String =
+        if (IS_X86_64) "efa5a6a098548444e7bc33e5e78bafa4389c27e923a4b9546c7ed5f119890e3b"
+        else "1fbf9c908375184a8c33c1ea6defbe9f74291488efee74f2760a08604a6f354b"
     /** The download size the installers show for "Full environment". */
     val ROOTFS_SIZE_LABEL: String = if (IS_X86_64) "~400 MB" else "~350 MB"
     /** The mirrors that host this CPU's rootfs: the x86_64 one is only on GitHub. */
@@ -119,10 +128,10 @@ object LocalEnvironmentManager {
             if (notificationManager != null) {
                 val channel = NotificationChannel(
                     NOTIFICATION_CHANNEL_ID,
-                    "Rootfs Installation",
+                    L.local.environmentManager.rootfsInstallation,
                     NotificationManager.IMPORTANCE_LOW
                 ).apply {
-                    description = "Shows progress while downloading and installing the Linux rootfs"
+                    description = L.local.environmentManager.showsProgressWhileDownloadingAnd
                     setShowBadge(false)
                 }
                 notificationManager.createNotificationChannel(channel)
@@ -749,14 +758,35 @@ object LocalEnvironmentManager {
         // Ensure a clean slate by clearing any previous partial/broken install
         resetEnvironment(appContext)
 
+        // set once the old environment is deleted: from then on a failure for lack of space removes the half-unpacked one
+        var unpackStarted = false
+
         try {
             Log.d(TAG, "Starting local bootstrap installation (arch: $arch, source: $source) at ${prefixDir.absolutePath}...")
-            updateInstallNotification(appContext, "Installing Linux Rootfs", "Starting installation...", -1, force = true)
+            updateInstallNotification(appContext, L.local.environmentManager.installingLinuxRootfs, L.local.environmentManager.startingInstallation, -1, force = true)
 
             // Ensure base directories exist
             tmpDir.mkdirs()
             homeDir.mkdirs()
             projectsDir.mkdirs()
+
+            // Enough storage? The download has to fit next to the old environment; unpacking deletes that one first,
+            // so its space counts as free there. A ZIP file or URL of unknown size is checked once it is here.
+            val oldEnvBytes = if (prefixDir.exists()) calculateDirectorySize(prefixDir) else 0L
+            val expectedArchive = when (source) {
+                is BootstrapSource.Auto -> HARDCODED_ROOTFS_SIZE_BYTES
+                is BootstrapSource.BaseMinimum -> 35 * 1024 * 1024L
+                else -> 0L
+            }
+            if (expectedArchive > 0) {
+                val total = expectedArchive + (expectedArchive * UNPACK_RATIO).toLong() + StorageSpace.MARGIN_BYTES
+                val shortage = StorageSpace.shortage(appContext.filesDir, expectedArchive + StorageSpace.MARGIN_BYTES, ENV_LABEL)
+                    ?: StorageSpace.shortage(appContext.filesDir, total, ENV_LABEL, reclaimable = oldEnvBytes)
+                if (shortage != null) {
+                    log("❌ $shortage")
+                    return@withContext failInstall(appContext, shortage)
+                }
+            }
 
             val tempZipFile = File(appContext.cacheDir, "bootstrap-$arch-download.zip")
             if (tempZipFile.exists()) {
@@ -777,10 +807,10 @@ object LocalEnvironmentManager {
                         bytesDownloaded = 0L,
                         totalBytes = targetSizeBytes,
                         progressFraction = 0.02f,
-                        speedText = "Connecting...",
+                        speedText = L.local.environmentManager.connecting,
                         currentPackageName = targetAsset
                     )
-                    updateInstallNotification(appContext, "Downloading $titlePrefix", "Connecting...", -1)
+                    updateInstallNotification(appContext, L.local.environmentManager.downloadingTitleprefix(titlePrefix), L.local.environmentManager.connecting, -1)
 
                     try {
                         val request = Request.Builder()
@@ -790,16 +820,16 @@ object LocalEnvironmentManager {
 
                         httpClient.newCall(request).execute().use { response ->
                             if (!response.isSuccessful) {
-                                val errorMsg = "Download failed: HTTP ${response.code} from release server."
-                                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                                val errorMsg = L.local.environmentManager.downloadFailedHttpCodeFromRelease(response.code)
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                                 _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                                 return@withContext false
                             }
 
                             val body = response.body
                             if (body == null) {
-                                val errorMsg = "Download failed: Empty response body."
-                                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                                val errorMsg = L.local.environmentManager.downloadFailedEmptyResponseBody
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                                 _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                                 return@withContext false
                             }
@@ -810,12 +840,14 @@ object LocalEnvironmentManager {
                             val startTime = System.currentTimeMillis()
 
                             val buffer = ByteArray(64 * 1024)
+                            val sha256 = java.security.MessageDigest.getInstance("SHA-256")
                             FileOutputStream(tempZipFile).use { outStream ->
                                 body.byteStream().use { inStream ->
                                     var read: Int
                                     var lastUpdate = System.currentTimeMillis()
                                     while (inStream.read(buffer).also { read = it } != -1) {
                                         outStream.write(buffer, 0, read)
+                                        sha256.update(buffer, 0, read)
                                         bytesReadTotal += read
 
                                         val now = System.currentTimeMillis()
@@ -833,7 +865,7 @@ object LocalEnvironmentManager {
                                                 currentPackageName = targetAsset
                                             )
                                             val pct = (fraction * 100).toInt()
-                                            updateInstallNotification(appContext, "Downloading $titlePrefix ($pct%)", "$speedFormatted • $targetAsset", pct)
+                                            updateInstallNotification(appContext, L.local.environmentManager.downloadingTitlePct(titlePrefix, pct), "$speedFormatted • $targetAsset", pct)
                                             lastUpdate = now
                                         }
                                     }
@@ -841,12 +873,21 @@ object LocalEnvironmentManager {
                             }
 
                             finalDownloadedSize = tempZipFile.length()
+                            val gotSha = sha256.digest().joinToString("") { "%02x".format(it) }
+                            if (!gotSha.equals(HARDCODED_ROOTFS_SHA256, ignoreCase = true)) {
+                                Log.w(TAG, "Rootfs sha256 mismatch from $targetUrl: $gotSha (${finalDownloadedSize} bytes)")
+                                tempZipFile.delete()
+                                val errorMsg = L.local.environmentManager.theDownloadedEnvironmentIsNotThe
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
+                                _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
+                                return@withContext false
+                            }
                             if (finalDownloadedSize >= MIN_BOOTSTRAP_SIZE_BYTES && validateArchiveIntegrity(tempZipFile)) {
                                 downloadSucceeded = true
                             } else {
                                 tempZipFile.delete()
-                                val errorMsg = "Downloaded rootfs archive was incomplete or corrupted."
-                                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                                val errorMsg = L.local.environmentManager.downloadedRootfsArchiveWasIncompleteOr
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                                 _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                                 return@withContext false
                             }
@@ -854,8 +895,9 @@ object LocalEnvironmentManager {
                     } catch (e: Exception) {
                         Log.w(TAG, "Download attempt failed from $targetUrl: ${e.message}")
                         if (tempZipFile.exists()) tempZipFile.delete()
-                        val errorMsg = "Download failed: ${e.message ?: "Network error"}"
-                        updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                        val errorMsg = if (StorageSpace.isOutOfSpace(e)) StorageSpace.outOfSpaceMessage(ENV_LABEL)
+                            else L.local.environmentManager.downloadFailedValue(e.message ?: L.local.environmentManager.networkError)
+                        updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                         _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                         return@withContext false
                     }
@@ -866,10 +908,10 @@ object LocalEnvironmentManager {
                         bytesDownloaded = 0L,
                         totalBytes = 35 * 1024 * 1024L,
                         progressFraction = 0.02f,
-                        speedText = "Finding package...",
+                        speedText = L.local.environmentManager.findingPackage,
                         currentPackageName = "bootstrap-$arch.zip"
                     )
-                    updateInstallNotification(appContext, "Downloading Linux Rootfs", "Finding bootstrap package...", -1)
+                    updateInstallNotification(appContext, L.local.environmentManager.downloadingLinuxRootfs, L.local.environmentManager.findingBootstrapPackage, -1)
 
                     val downloadUrls = resolveBootstrapUrls(arch)
                     Log.d(TAG, "Resolved ${downloadUrls.size} candidate bootstrap download URLs for $arch")
@@ -881,10 +923,10 @@ object LocalEnvironmentManager {
                                 bytesDownloaded = 0L,
                                 totalBytes = 35 * 1024 * 1024L,
                                 progressFraction = 0.05f,
-                                speedText = "Connecting mirror ${index + 1}...",
+                                speedText = L.local.environmentManager.connectingMirrorValue(index + 1),
                                 currentPackageName = "bootstrap-$arch.zip"
                             )
-                            updateInstallNotification(appContext, "Downloading Linux Rootfs", "Connecting mirror ${index + 1}...", -1)
+                            updateInstallNotification(appContext, L.local.environmentManager.downloadingLinuxRootfs, L.local.environmentManager.connectingMirrorValue(index + 1), -1)
 
                             val request = Request.Builder()
                                 .url(url)
@@ -932,7 +974,7 @@ object LocalEnvironmentManager {
                                                     currentPackageName = "bootstrap-$arch.zip"
                                                 )
                                                 val pct = (fraction * 100).toInt()
-                                                updateInstallNotification(appContext, "Downloading Linux Rootfs ($pct%)", "$speedFormatted • bootstrap-$arch.zip", pct)
+                                                updateInstallNotification(appContext, L.local.environmentManager.downloadingLinuxRootfsPct(pct), "$speedFormatted • bootstrap-$arch.zip", pct)
                                                 lastUpdate = now
                                             }
                                         }
@@ -951,6 +993,8 @@ object LocalEnvironmentManager {
                         } catch (e: Exception) {
                             Log.w(TAG, "Download attempt failed from $url: ${e.message}")
                             if (tempZipFile.exists()) tempZipFile.delete()
+                            // another mirror would fill the storage the same way
+                            if (StorageSpace.isOutOfSpace(e)) return@withContext failInstall(appContext, StorageSpace.outOfSpaceMessage(ENV_LABEL))
                         }
                     }
                 }
@@ -958,8 +1002,15 @@ object LocalEnvironmentManager {
                 is BootstrapSource.DirectUrl -> {
                     val customUrl = source.url.trim()
                     if (customUrl.isBlank() || !customUrl.startsWith("http")) {
-                        val errorMsg = "Invalid download URL. Please provide a valid http/https direct link."
-                        updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                        val errorMsg = L.local.environmentManager.invalidDownloadUrlPleaseProvideA
+                        updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
+                        _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
+                        return@withContext false
+                    }
+                    // a plain http:// rootfs can be swapped by anyone on the network: the environment would run it
+                    if (!customUrl.startsWith("https://", ignoreCase = true)) {
+                        val errorMsg = L.local.environmentManager.onlyHttpsDownloadLinksAreAccepted
+                        updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                         _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                         return@withContext false
                     }
@@ -968,10 +1019,10 @@ object LocalEnvironmentManager {
                         bytesDownloaded = 0L,
                         totalBytes = 35 * 1024 * 1024L,
                         progressFraction = 0.05f,
-                        speedText = "Connecting direct URL...",
+                        speedText = L.local.environmentManager.connectingDirectUrl,
                         currentPackageName = customUrl.substringAfterLast("/").take(30)
                     )
-                    updateInstallNotification(appContext, "Downloading Linux Rootfs", "Connecting direct URL...", -1)
+                    updateInstallNotification(appContext, L.local.environmentManager.downloadingLinuxRootfs, L.local.environmentManager.connectingDirectUrl, -1)
 
                     try {
                         val request = Request.Builder()
@@ -981,16 +1032,16 @@ object LocalEnvironmentManager {
 
                         httpClient.newCall(request).execute().use { response ->
                             if (!response.isSuccessful) {
-                                val errorMsg = "Server returned HTTP ${response.code} for: $customUrl"
-                                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                                val errorMsg = L.local.environmentManager.serverReturnedHttpCodeForCustomurl(response.code, customUrl)
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                                 _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                                 return@withContext false
                             }
 
                             val body = response.body
                             if (body == null) {
-                                updateInstallNotification(appContext, "Installation Failed", "Empty response body", -2, ongoing = false, force = true)
-                                _installerState.value = LocalInstallerState.Error(errorMessage = "Empty response body received from URL.", canRetry = true)
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, L.local.environmentManager.emptyResponseBody, -2, ongoing = false, force = true)
+                                _installerState.value = LocalInstallerState.Error(errorMessage = L.local.environmentManager.emptyResponseBodyReceivedFromUrl, canRetry = true)
                                 return@withContext false
                             }
 
@@ -1000,12 +1051,14 @@ object LocalEnvironmentManager {
                             val startTime = System.currentTimeMillis()
 
                             val buffer = ByteArray(64 * 1024)
+                            val sha256 = java.security.MessageDigest.getInstance("SHA-256")
                             FileOutputStream(tempZipFile).use { outStream ->
                                 body.byteStream().use { inStream ->
                                     var read: Int
                                     var lastUpdate = System.currentTimeMillis()
                                     while (inStream.read(buffer).also { read = it } != -1) {
                                         outStream.write(buffer, 0, read)
+                                        sha256.update(buffer, 0, read)
                                         bytesReadTotal += read
 
                                         val now = System.currentTimeMillis()
@@ -1023,32 +1076,47 @@ object LocalEnvironmentManager {
                                                 currentPackageName = customUrl.substringAfterLast("/").take(25)
                                             )
                                             val pct = (fraction * 100).toInt()
-                                            updateInstallNotification(appContext, "Downloading Linux Rootfs ($pct%)", speedFormatted, pct)
+                                            updateInstallNotification(appContext, L.local.environmentManager.downloadingLinuxRootfsPct(pct), speedFormatted, pct)
                                             lastUpdate = now
                                         }
                                     }
                                 }
                             }
                             finalDownloadedSize = tempZipFile.length()
+                            // AntiGem's own rootfs through this path gets the same pinned check as Auto
+                            if (customUrl == HARDCODED_ROOTFS_URL || customUrl == HUGGINGFACE_ROOTFS_URL) {
+                                val gotSha = sha256.digest().joinToString("") { "%02x".format(it) }
+                                if (!gotSha.equals(HARDCODED_ROOTFS_SHA256, ignoreCase = true)) {
+                                    Log.w(TAG, "Rootfs sha256 mismatch from $customUrl: $gotSha")
+                                    tempZipFile.delete()
+                                    val errorMsg = L.local.environmentManager.theDownloadedEnvironmentIsNotThe
+                                    updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
+                                    _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
+                                    return@withContext false
+                                }
+                            }
                             if (finalDownloadedSize < MIN_BOOTSTRAP_SIZE_BYTES) {
-                                val errorMsg = "Downloaded file from URL is only ${formatFileSize(finalDownloadedSize)} (< 10 MB required)."
+                                val errorMsg = L.local.environmentManager.downloadedFileFromUrlIsOnly(formatFileSize(finalDownloadedSize))
                                 tempZipFile.delete()
-                                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                                 _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                                 return@withContext false
                             }
                             if (!validateArchiveIntegrity(tempZipFile)) {
-                                val errorMsg = "Downloaded file is not a valid archive."
+                                val errorMsg = L.local.environmentManager.downloadedFileIsNotAValid
                                 tempZipFile.delete()
-                                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                                 _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                                 return@withContext false
                             }
                             downloadSucceeded = true
                         }
                     } catch (e: Exception) {
-                        val errorMsg = "Direct download failed: ${e.localizedMessage ?: e.message}"
-                        updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                        val outOfSpace = StorageSpace.isOutOfSpace(e)
+                        if (outOfSpace) tempZipFile.delete()
+                        val errorMsg = if (outOfSpace) StorageSpace.outOfSpaceMessage(ENV_LABEL)
+                            else L.local.environmentManager.directDownloadFailedValue(e.localizedMessage ?: e.message)
+                        updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                         _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                         return@withContext false
                     }
@@ -1059,10 +1127,10 @@ object LocalEnvironmentManager {
                         bytesDownloaded = 0L,
                         totalBytes = 35 * 1024 * 1024L,
                         progressFraction = 0.1f,
-                        speedText = "Importing file...",
-                        currentPackageName = "Local Archive"
+                        speedText = L.local.environmentManager.importingFile,
+                        currentPackageName = L.local.environmentManager.localArchive
                     )
-                    updateInstallNotification(appContext, "Importing Linux Rootfs", "Importing archive file...", -1, force = true)
+                    updateInstallNotification(appContext, L.local.environmentManager.importingLinuxRootfs, L.local.environmentManager.importingArchiveFile, -1, force = true)
 
                     try {
                         val inStream = appContext.contentResolver.openInputStream(source.uri)
@@ -1081,23 +1149,26 @@ object LocalEnvironmentManager {
                         }
                         finalDownloadedSize = tempZipFile.length()
                         if (finalDownloadedSize < MIN_BOOTSTRAP_SIZE_BYTES) {
-                            val errorMsg = "Selected file is only ${formatFileSize(finalDownloadedSize)} (< 10 MB minimum required)."
+                            val errorMsg = L.local.environmentManager.selectedFileIsOnlyFormatfilesize10(formatFileSize(finalDownloadedSize))
                             tempZipFile.delete()
-                            updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                            updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                             _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                             return@withContext false
                         }
                         if (!validateArchiveIntegrity(tempZipFile)) {
-                            val errorMsg = "The selected file (${formatFileSize(finalDownloadedSize)}) is not a valid or readable archive."
+                            val errorMsg = L.local.environmentManager.theSelectedFileSizeIsNot(formatFileSize(finalDownloadedSize))
                             tempZipFile.delete()
-                            updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                            updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                             _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                             return@withContext false
                         }
                         downloadSucceeded = true
                     } catch (e: Exception) {
-                        val errorMsg = "Failed to import selected ZIP file: ${e.localizedMessage ?: e.message}"
-                        updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                        val outOfSpace = StorageSpace.isOutOfSpace(e)
+                        if (outOfSpace) tempZipFile.delete()
+                        val errorMsg = if (outOfSpace) StorageSpace.outOfSpaceMessage(ENV_LABEL)
+                            else L.local.environmentManager.failedToImportSelectedZipFile(e.localizedMessage ?: e.message)
+                        updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                         _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
                         return@withContext false
                     }
@@ -1105,9 +1176,9 @@ object LocalEnvironmentManager {
             }
 
             if (!downloadSucceeded || !tempZipFile.exists() || tempZipFile.length() < MIN_BOOTSTRAP_SIZE_BYTES) {
-                val errorMsg = "Bootstrap archive is missing or invalid (< 10 MB). Please check source and retry."
+                val errorMsg = L.local.environmentManager.bootstrapArchiveIsMissingOrInvalid
                 Log.e(TAG, errorMsg)
-                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                 _installerState.value = LocalInstallerState.Error(
                     errorMessage = errorMsg,
                     canRetry = true
@@ -1165,6 +1236,7 @@ object LocalEnvironmentManager {
                         }
                     }
                 } catch (e: Exception) {
+                    if (StorageSpace.isOutOfSpace(e)) throw e
                     Log.w(TAG, "Error inspecting outer ZIP structure: ${e.message}")
                 }
             }
@@ -1177,6 +1249,18 @@ object LocalEnvironmentManager {
                 tempZipFile
             }
 
+            // Room to unpack, before the old environment is deleted (its space counts as free): a ZIP lists its exact
+            // unpacked size, a tarball or .deb bundle is estimated
+            val unpackedZipBytes = if (isGzipTar || isXzTar || isDebsOnlyArchive) 0L else runCatching {
+                java.util.zip.ZipFile(archiveToExtract).use { z -> z.entries().asSequence().sumOf { it.size.coerceAtLeast(0L) } }
+            }.getOrDefault(0L)
+            val unpackBytes = if (unpackedZipBytes > 0) unpackedZipBytes else (archiveToExtract.length() * UNPACK_RATIO).toLong()
+            StorageSpace.shortage(appContext.filesDir, unpackBytes + StorageSpace.MARGIN_BYTES, ENV_LABEL, reclaimable = oldEnvBytes)?.let { shortage ->
+                archiveToExtract.delete()
+                log("❌ $shortage")
+                return@withContext failInstall(appContext, shortage)
+            }
+
             // STEP 2: Extract verified bootstrap archive
             val archiveFormatName = if (isXzTar) "XZ" else if (isGzipTar) "GZIP" else if (isDebsOnlyArchive) "DEB" else "ZIP"
             log("Archive ready: ${formatFileSize(archiveToExtract.length())}, format=$archiveFormatName")
@@ -1185,14 +1269,15 @@ object LocalEnvironmentManager {
                 extractedFilesCount = 0,
                 totalFilesEstimate = if (isDebsOnlyArchive) 155 else 1200,
                 progressFraction = 0.05f,
-                currentFileName = "Preparing directory structure..."
+                currentFileName = L.local.environmentManager.preparingDirectoryStructure
             )
-            updateInstallNotification(appContext, "Extracting Linux Rootfs (0%)", "Preparing directory structure...", 0, force = true)
+            updateInstallNotification(appContext, L.local.environmentManager.extractingLinuxRootfs0, L.local.environmentManager.preparingDirectoryStructure, 0, force = true)
 
             // Reset target directory for a clean install
             if (prefixDir.exists()) {
                 prefixDir.deleteRecursively()
             }
+            unpackStarted = true
             prefixDir.mkdirs()
             binDir.mkdirs()
             libDir.mkdirs()
@@ -1209,10 +1294,10 @@ object LocalEnvironmentManager {
                         extractedFilesCount = count,
                         totalFilesEstimate = total,
                         progressFraction = fraction,
-                        currentFileName = "Unpacking package: $pkgName"
+                        currentFileName = L.local.environmentManager.unpackingPackagePkgname(pkgName)
                     )
                     val pct = (fraction * 100).toInt()
-                    updateInstallNotification(appContext, "Extracting Packages ($pct%)", "Unpacking $pkgName ($count/$total)", pct)
+                    updateInstallNotification(appContext, L.local.environmentManager.extractingPackagesPct(pct), L.local.environmentManager.unpackingPkgnameCountTotal(pkgName, count, total), pct)
                 }
             } else if (isGzipTar || isXzTar) {
                 val destDir = prefixDir
@@ -1224,6 +1309,7 @@ object LocalEnvironmentManager {
                 } else {
                     GzipCompressorInputStream(rawStream)
                 }
+                val roots = writeRoots(prefixDir, homeDir)
                 TarArchiveInputStream(compressedStream).use { tarIn ->
                     var entry: TarArchiveEntry? = tarIn.nextEntry
                     while (entry != null) {
@@ -1231,6 +1317,7 @@ object LocalEnvironmentManager {
                         val cleanPath = rawName.removePrefix("./").removePrefix("/")
                         if (cleanPath.isNotEmpty()) {
                             val targetFile = rootfsTarget(cleanPath, prefixDir, homeDir)
+                                ?.takeIf { writableTarget(it, roots, entry.isDirectory) }
 
                             if (targetFile != null) {
                                 targetFile.parentFile?.let { p ->
@@ -1250,6 +1337,8 @@ object LocalEnvironmentManager {
                                         try {
                                             Os.symlink(symlinkTarget, targetFile.absolutePath)
                                         } catch (e: Exception) {
+                                            // a full storage fails every file after it too: the whole install stops (see the catch at the end)
+                                            if (StorageSpace.isOutOfSpace(e)) throw e
                                             Log.w(TAG, "Failed creating symlink $cleanPath -> $symlinkTarget: ${e.message}")
                                         }
                                     }
@@ -1279,6 +1368,7 @@ object LocalEnvironmentManager {
                                             try { Os.chmod(targetFile.absolutePath, if (unixMode != 0) unixMode or 420 else 420) } catch (_: Exception) {}
                                         }
                                     } catch (e: Exception) {
+                                        if (StorageSpace.isOutOfSpace(e)) throw e
                                         Log.w(TAG, "Error extracting $rawName to ${targetFile.absolutePath}: ${e.message}")
                                     }
                                 }
@@ -1295,7 +1385,7 @@ object LocalEnvironmentManager {
                                 currentFileName = rawName
                             )
                             val pct = (fraction * 100).toInt()
-                            updateInstallNotification(appContext, "Extracting Rootfs ($pct%)", rawName.substringAfterLast("/"), pct)
+                            updateInstallNotification(appContext, L.local.environmentManager.extractingRootfsPct(pct), rawName.substringAfterLast("/"), pct)
                         }
                         entry = tarIn.nextEntry
                     }
@@ -1304,8 +1394,12 @@ object LocalEnvironmentManager {
                 val destDir = prefixDir
                 log("Extracting rootfs files from ZIP into ${destDir.absolutePath}...")
                 val symlinksFromTxt = mutableListOf<Pair<String, String>>()
-                CommonsZipFile(archiveToExtract).use { zip ->
-                    val entriesList = zip.entries.toList()
+                val roots = writeRoots(prefixDir, homeDir)
+                // java.util.zip, not commons-compress ZipFile: its ZipArchiveEntry calls ZipEntry.getLastAccessTime()
+                // (API 26+, not desugared), which crashes on Android 7. Unix modes come from the central directory.
+                val unixModes = readZipUnixModes(archiveToExtract)
+                java.util.zip.ZipFile(archiveToExtract).use { zip ->
+                    val entriesList = zip.entries().toList()
                     val totalEntries = entriesList.size
 
                     for (entry in entriesList) {
@@ -1332,11 +1426,12 @@ object LocalEnvironmentManager {
 
                         val cleanPath = rawName.removePrefix("./")
                         val targetFile = rootfsTarget(cleanPath, prefixDir, homeDir)
+                            ?.takeIf { writableTarget(it, roots, entry.isDirectory) }
 
                         if (targetFile != null) {
-                            val unixMode = entry.unixMode
+                            val unixMode = unixModes[rawName] ?: 0
 
-                            if (entry.isUnixSymlink) {
+                            if ((unixMode and 0xF000) == 0xA000) { // S_IFLNK: a symlink stored in the ZIP
                                 try {
                                     targetFile.parentFile?.let { p ->
                                         if (!p.exists()) {
@@ -1348,11 +1443,12 @@ object LocalEnvironmentManager {
                                         targetFile.setWritable(true, true)
                                         try { targetFile.delete() } catch (_: Exception) {}
                                     }
-                                    val symlinkTarget = zip.getUnixSymlink(entry)
+                                    val symlinkTarget = zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
                                     if (!symlinkTarget.isNullOrBlank()) {
                                         Os.symlink(symlinkTarget, targetFile.absolutePath)
                                     }
                                 } catch (e: Exception) {
+                                    if (StorageSpace.isOutOfSpace(e)) throw e
                                     Log.w(TAG, "Failed creating embedded symlink for $rawName: ${e.message}")
                                 }
                             } else if (entry.isDirectory) {
@@ -1403,6 +1499,7 @@ object LocalEnvironmentManager {
                                         targetFile.setWritable(true, true)
                                     }
                                 } catch (e: Exception) {
+                                    if (StorageSpace.isOutOfSpace(e)) throw e
                                     Log.w(TAG, "Non-fatal error extracting ${rawName} to ${targetFile.absolutePath}: ${e.message}")
                                 }
                             }
@@ -1418,7 +1515,7 @@ object LocalEnvironmentManager {
                                 currentFileName = rawName
                             )
                             val pct = (fraction * 100).toInt()
-                            updateInstallNotification(appContext, "Extracting Rootfs ($pct%)", rawName.substringAfterLast("/"), pct)
+                            updateInstallNotification(appContext, L.local.environmentManager.extractingRootfsPct(pct), rawName.substringAfterLast("/"), pct)
                         }
                     }
 
@@ -1429,6 +1526,7 @@ object LocalEnvironmentManager {
                             try {
                                 val cleanRel = linkRelPath.removePrefix("./")
                                 val linkFile = rootfsTarget(cleanRel, prefixDir, homeDir)
+                                    ?.takeIf { writableTarget(it, roots, false) }
 
                                 if (linkFile != null) {
                                     linkFile.parentFile?.let { p ->
@@ -1444,6 +1542,7 @@ object LocalEnvironmentManager {
                                     Os.symlink(target, linkFile.absolutePath)
                                 }
                             } catch (e: Exception) {
+                                if (StorageSpace.isOutOfSpace(e)) throw e
                                 Log.w(TAG, "Error creating symlink for $linkRelPath -> $target: ${e.message}")
                             }
                         }
@@ -1455,13 +1554,13 @@ object LocalEnvironmentManager {
             TermuxRelocation.targetPackage(appContext)?.let { pkg ->
                 log("Adapting Termux files for $pkg...")
                 _installerState.value = LocalInstallerState.Configuring(
-                    stepDescription = "Adapting Termux files for $pkg...",
+                    stepDescription = L.local.environmentManager.adaptingTermuxFilesForPkg(pkg),
                     progressFraction = 0.88f
                 )
-                updateInstallNotification(appContext, "Adapting Linux Environment", "Rewriting com.termux paths for $pkg...", -1, force = true)
+                updateInstallNotification(appContext, L.local.environmentManager.adaptingLinuxEnvironment, L.local.environmentManager.rewritingComTermuxPathsForPkg(pkg), -1, force = true)
                 val onProgress: (Int) -> Unit = { n ->
                     _installerState.value = LocalInstallerState.Configuring(
-                        stepDescription = "Adapting Termux files for $pkg ($n files checked)...",
+                        stepDescription = L.local.environmentManager.adaptingTermuxFilesForPkgN(pkg, n),
                         progressFraction = 0.88f
                     )
                 }
@@ -1477,19 +1576,19 @@ object LocalEnvironmentManager {
             // STEP 3: Configure Shell Profiles & Environment
             log("Configuring shell profiles (.bashrc) and directory permissions...")
             _installerState.value = LocalInstallerState.Configuring(
-                stepDescription = "Configuring shell profiles, paths, and environment...",
+                stepDescription = L.local.environmentManager.configuringShellProfilesPathsAnd,
                 progressFraction = 0.90f
             )
-            updateInstallNotification(appContext, "Configuring Linux Environment (90%)", "Configuring paths, permissions, and shell profiles...", 90, force = true)
+            updateInstallNotification(appContext, L.local.environmentManager.configuringLinuxEnvironment90, L.local.environmentManager.configuringPathsPermissionsAndShell, 90, force = true)
             
             configureEnvironmentFiles(appContext, prefixDir, binDir, etcDir, homeDir, projectsDir)
             repairIncompletePackages(appContext)
 
             // STEP 4: Strict Verification
             _installerState.value = LocalInstallerState.Verifying(
-                testName = "Verifying Linux environment and shell execution..."
+                testName = L.local.environmentManager.verifyingLinuxEnvironmentAndShell
             )
-            updateInstallNotification(appContext, "Verifying Installation (95%)", "Testing shell environment...", 95, force = true)
+            updateInstallNotification(appContext, L.local.environmentManager.verifyingInstallation95, L.local.environmentManager.testingShellEnvironment, 95, force = true)
             delay(200)
 
             val checkDir = prefixDir
@@ -1498,10 +1597,10 @@ object LocalEnvironmentManager {
             log("Total installed rootfs size: $installedSizeStr ($installedSize bytes)")
 
             if (installedSize < 5 * 1024 * 1024L) {
-                val errorMsg = "Verification failed: installed package directory is too small ($installedSizeStr). Installation is incomplete."
+                val errorMsg = L.local.environmentManager.verificationFailedInstalledPackage(installedSizeStr)
                 log("❌ $errorMsg")
                 cleanupFailedInstall(appContext, authPreferences)
-                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                 _installerState.value = LocalInstallerState.Error(
                     errorMessage = errorMsg,
                     canRetry = true
@@ -1517,10 +1616,10 @@ object LocalEnvironmentManager {
             log("Verification output: ${testRes.output.trim()}")
 
             if (!testRes.output.contains("GEMINI_LOCAL_TOOLS_OK")) {
-                val errorMsg = "Shell verification test failed: ${testRes.output}"
+                val errorMsg = L.local.environmentManager.shellVerificationTestFailedOutput(testRes.output)
                 log("❌ $errorMsg")
                 cleanupFailedInstall(appContext, authPreferences)
-                updateInstallNotification(appContext, "Installation Failed", errorMsg, -2, ongoing = false, force = true)
+                updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
                 _installerState.value = LocalInstallerState.Error(
                     errorMessage = errorMsg,
                     canRetry = true
@@ -1545,11 +1644,11 @@ object LocalEnvironmentManager {
             authPreferences.setTerminalToolEnabled(true)
 
             _installerState.value = LocalInstallerState.Success(
-                message = "Termux Linux environment verified and installed successfully!",
+                message = L.local.environmentManager.termuxLinuxEnvironmentVerifiedAnd,
                 prefixPath = prefixDir.absolutePath,
                 totalDiskUsageFormatted = getFormattedDiskSpace(appContext)
             )
-            updateInstallNotification(appContext, "Installation Complete", "Termux Linux environment is verified and ready!", 100, ongoing = false, force = true)
+            updateInstallNotification(appContext, L.local.environmentManager.installationComplete, L.local.environmentManager.termuxLinuxEnvironmentIsVerifiedAnd, 100, ongoing = false, force = true)
             log("✅ Local environment ready and verified! Total space: ${getFormattedDiskSpace(appContext)}")
             if (wasChroot && ai.antigem.data.agent.AgentPreferences.hasChosenSync(appContext)) {
                 LocalServerManager.startServer(appContext, forceRestart = true)
@@ -1560,14 +1659,30 @@ object LocalEnvironmentManager {
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to install local tools: ${e.message}", e)
+            if (StorageSpace.isOutOfSpace(e)) {
+                // the archive and a half-unpacked environment would keep the phone full, and nothing resumes from them
+                File(appContext.cacheDir, "bootstrap-$arch-download.zip").delete()
+                File(appContext.cacheDir, "inner_bootstrap.zip").delete()
+                if (unpackStarted) prefixDir.deleteRecursively()
+                cleanupFailedInstall(appContext, authPreferences)
+                log("❌ Out of storage: ${e.message}")
+                return@withContext failInstall(appContext, StorageSpace.outOfSpaceMessage(ENV_LABEL))
+            }
             cleanupFailedInstall(appContext, authPreferences)
-            updateInstallNotification(appContext, "Installation Failed", e.localizedMessage ?: "Installation error", -2, ongoing = false, force = true)
+            updateInstallNotification(appContext, L.local.environmentManager.installationFailed, e.localizedMessage ?: L.local.environmentManager.installationError, -2, ongoing = false, force = true)
             _installerState.value = LocalInstallerState.Error(
-                errorMessage = "Installation failed: ${e.localizedMessage ?: e.message}",
+                errorMessage = L.local.environmentManager.installationFailedError(e.localizedMessage ?: e.message),
                 canRetry = true
             )
             return@withContext false
         }
+    }
+
+    /** Ends the install with [errorMsg] (notification + error screen); returns false for `return@withContext`. */
+    private fun failInstall(appContext: Context, errorMsg: String): Boolean {
+        updateInstallNotification(appContext, L.local.environmentManager.installationFailed, errorMsg, -2, ongoing = false, force = true)
+        _installerState.value = LocalInstallerState.Error(errorMessage = errorMsg, canRetry = true)
+        return false
     }
 
     private suspend fun cleanupFailedInstall(context: Context, authPreferences: AuthPreferences) {
@@ -1614,6 +1729,50 @@ object LocalEnvironmentManager {
     }
 
     /**
+     * Unix mode (file type + permission bits) of each ZIP entry made on Unix, by entry name, read from the ZIP's
+     * central directory: the same value commons-compress ZipArchiveEntry.unixMode gives, which java.util.zip does not
+     * expose. Empty if the central directory can't be read (e.g. ZIP64), so callers use their default modes.
+     */
+    private fun readZipUnixModes(file: File): Map<String, Int> = try {
+        RandomAccessFile(file, "r").use { raf ->
+            val len = raf.length()
+            // End of central directory record: 22 bytes plus a comment of up to 65535 bytes, at the end of the file
+            val tailLen = minOf(len, 22L + 65535L).toInt()
+            val tail = ByteArray(tailLen)
+            raf.seek(len - tailLen)
+            raf.readFully(tail)
+            val t = java.nio.ByteBuffer.wrap(tail).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val eocd = (tailLen - 22 downTo 0).firstOrNull { t.getInt(it) == 0x06054b50 }
+                ?: return@use emptyMap<String, Int>()
+            val cdSize = t.getInt(eocd + 12).toLong() and 0xFFFFFFFFL
+            val cdOffset = t.getInt(eocd + 16).toLong() and 0xFFFFFFFFL
+            if (cdSize == 0xFFFFFFFFL || cdOffset == 0xFFFFFFFFL || cdOffset + cdSize > len) return@use emptyMap<String, Int>()
+            val cd = ByteArray(cdSize.toInt())
+            raf.seek(cdOffset)
+            raf.readFully(cd)
+            val c = java.nio.ByteBuffer.wrap(cd).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val modes = HashMap<String, Int>()
+            var p = 0
+            // Central directory file headers: 46 fixed bytes, then name, extra field and comment
+            while (p + 46 <= cd.size && c.getInt(p) == 0x02014b50) {
+                val madeBy = c.getShort(p + 4).toInt() and 0xFFFF
+                val nameLen = c.getShort(p + 28).toInt() and 0xFFFF
+                val extraLen = c.getShort(p + 30).toInt() and 0xFFFF
+                val commentLen = c.getShort(p + 32).toInt() and 0xFFFF
+                val externalAttrs = c.getInt(p + 38)
+                if (p + 46 + nameLen > cd.size) break
+                // Host system 3 = Unix: the high 16 bits of the external attributes are st_mode
+                if (madeBy shr 8 == 3) modes[String(cd, p + 46, nameLen, Charsets.UTF_8)] = (externalAttrs ushr 16) and 0xFFFF
+                p += 46 + nameLen + extraLen + commentLen
+            }
+            modes
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Reading ZIP unix modes failed: ${e.message}")
+        emptyMap()
+    }
+
+    /**
      * Packages the archive left incomplete: files dpkg lists for them are missing (backups made by older versions of
      * backup_bootstrap left out every cache/ folder, npm's own code among them). They are reinstalled with apt, which
      * also rewrites them for this app. The termux-api package (the termux-* commands) is installed with them when it
@@ -1640,10 +1799,10 @@ object LocalEnvironmentManager {
         if (incomplete.isNotEmpty()) log("Packages with missing files: ${incomplete.joinToString { "${it.first} (${it.second})" }}. Reinstalling them...")
         if (addTermuxApi) log("Installing termux-api (the termux-* commands)...")
         _installerState.value = LocalInstallerState.Configuring(
-            stepDescription = if (incomplete.isNotEmpty()) "Repairing ${incomplete.size} incomplete package(s)..." else "Installing termux-api...",
+            stepDescription = if (incomplete.isNotEmpty()) L.local.environmentManager.repairingCountIncompletePackageS(incomplete.size) else L.local.environmentManager.installingTermuxApi,
             progressFraction = 0.92f
         )
-        updateInstallNotification(context, "Completing Linux Environment", "Installing $names", -1, force = true)
+        updateInstallNotification(context, L.local.environmentManager.completingLinuxEnvironment, L.local.environmentManager.installingNames(names), -1, force = true)
         val keep = "-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
         val result = executeCommand(
             command = "apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q $keep --reinstall $names",
@@ -1673,12 +1832,42 @@ object LocalEnvironmentManager {
             p = p.replaceFirst(ROOTFS_FILES_PREFIX, "")
         }
         p = p.trimEnd('/')
+        // "../" would leave usr/ and home/ (another app folder, shared_prefs, ...): such an entry is never extracted
+        if (p.split('/').any { it == ".." }) return null
         return when {
             p.isEmpty() || p == "usr" || p == "home" -> null
             p.startsWith("home/") -> File(homeDir, p.removePrefix("home/"))
             p.startsWith("usr/") -> File(prefixDir, p.removePrefix("usr/"))
             else -> File(prefixDir, p)
         }
+    }
+
+    /** [prefixDir] and [homeDir] with every link resolved: the only places a rootfs or backup archive may write to. */
+    private fun writeRoots(prefixDir: File, homeDir: File): List<File> =
+        listOf(prefixDir, homeDir).mapNotNull { runCatching { it.canonicalFile }.getOrNull() }
+
+    private fun insideRoots(file: File, roots: List<File>): Boolean =
+        roots.any { r -> file == r || file.path.startsWith(r.path + File.separator) }
+
+    /**
+     * Whether an archive entry may be written at [target]: its folder, with every link on the way followed, is still
+     * in usr/ or home/. A link an earlier entry made (or one that was already there) can't take a later entry
+     * anywhere else. A folder entry on a link that leads out has the link removed (a chmod would follow it).
+     */
+    private fun writableTarget(target: File, roots: List<File>, isDirectory: Boolean): Boolean {
+        val parent = runCatching { target.parentFile?.canonicalFile }.getOrNull() ?: return false
+        if (!insideRoots(parent, roots)) {
+            Log.w(TAG, "Not extracting ${target.path}: its folder leads outside the environment ($parent)")
+            return false
+        }
+        if (isDirectory && isSymlink(target)) {
+            val resolved = runCatching { target.canonicalFile }.getOrNull()
+            if (resolved == null || !insideRoots(resolved, roots)) {
+                Log.w(TAG, "Removing the link ${target.path}: it leads outside the environment ($resolved)")
+                runCatching { target.delete() }
+            }
+        }
+        return true
     }
 
     /** "data/data/<pkg>/files/", "data/user/0/<pkg>/files/" or any other folder path ending in files/, before usr/ or home/. */
@@ -2206,7 +2395,7 @@ All files created here persist inside the application.
                 pb.environment()["HOME"] = homeDir.absolutePath
                 pb.environment()["PATH"] = "${binDir.absolutePath}:/system/bin"
                 val process = pb.start()
-                process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                process.waitForCompat(5, java.util.concurrent.TimeUnit.SECONDS)
                 log("Generated fresh OpenSSH host keys via ssh-keygen -A")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to run ssh-keygen -A: ${e.message}")
@@ -2296,11 +2485,11 @@ All files created here persist inside the application.
                 onOutputLine?.invoke(line!!)
             }
 
-            val exited = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            val exited = process.waitForCompat(timeoutSeconds, TimeUnit.SECONDS)
             val durationMs = System.currentTimeMillis() - startTime
 
             if (!exited) {
-                process.destroyForcibly()
+                process.destroyForciblyCompat()
                 outputBuilder.append("\n[Process timed out after ${timeoutSeconds}s]")
                 LocalCommandResult(exitCode = 124, output = outputBuilder.toString().trim(), durationMs = durationMs)
             } else {
@@ -2395,6 +2584,13 @@ All files created here persist inside the application.
         val homeDir = getHomeDir(context)
         val tmpDir = getTmpDir(context)
 
+        // without the environment there is no home folder to run in (starting the process would throw)
+        if (!isTermuxInstalled(context)) {
+            val msg = "❌ Error: the local environment isn't installed. Install it first, then try again."
+            withContext(Dispatchers.Main) { onLogLine(msg) }
+            return@withContext LocalCommandResult(1, msg, System.currentTimeMillis() - startTime)
+        }
+
         // Find script binary
         var scriptFile = File(binDir, scriptName)
         if (!scriptFile.exists() || !scriptFile.canExecute()) {
@@ -2433,7 +2629,14 @@ All files created here persist inside the application.
         env["LANG"] = "en_US.UTF-8"
 
         pb.redirectErrorStream(true)
-        val process = pb.start()
+        // a failed start (e.g. the home folder deleted meanwhile) is shown in the log, not thrown at the caller
+        val process = try {
+            pb.start()
+        } catch (e: IOException) {
+            val msg = "❌ Error: could not start $scriptName: ${e.message}"
+            withContext(Dispatchers.Main) { onLogLine(msg) }
+            return@withContext LocalCommandResult(1, msg, System.currentTimeMillis() - startTime)
+        }
         try {
             val outputBuilder = StringBuilder()
             val reader = BufferedReader(InputStreamReader(process.inputStream))
@@ -2453,9 +2656,9 @@ All files created here persist inside the application.
                 durationMs = System.currentTimeMillis() - startTime
             )
         } finally {
-            if (process.isAlive) {
+            if (process.isAliveCompat) {
                 try {
-                    process.destroyForcibly()
+                    process.destroyForciblyCompat()
                 } catch (_: Exception) {}
             }
         }
@@ -2471,6 +2674,13 @@ All files created here persist inside the application.
         val prefixDir = getPrefixDir(context)
         val homeDir = getHomeDir(context)
         val tmpDir = getTmpDir(context)
+
+        // without the environment there is no home folder to run in (starting the process would throw)
+        if (!isTermuxInstalled(context)) {
+            val msg = "❌ Error: the local environment isn't installed. Install it first, then try again."
+            withContext(Dispatchers.Main) { onLogLine(msg) }
+            return@withContext LocalCommandResult(1, msg, System.currentTimeMillis() - startTime)
+        }
 
         val bashPath = when {
             File(binDir, "bash").exists() -> File(binDir, "bash").absolutePath
@@ -2492,7 +2702,14 @@ All files created here persist inside the application.
         env["LANG"] = "en_US.UTF-8"
 
         pb.redirectErrorStream(true)
-        val process = pb.start()
+        // a failed start (e.g. the home folder deleted meanwhile) is shown in the log, not thrown at the caller
+        val process = try {
+            pb.start()
+        } catch (e: IOException) {
+            val msg = "❌ Error: could not start the command: ${e.message}"
+            withContext(Dispatchers.Main) { onLogLine(msg) }
+            return@withContext LocalCommandResult(1, msg, System.currentTimeMillis() - startTime)
+        }
         try {
             val outputBuilder = StringBuilder()
             val reader = BufferedReader(InputStreamReader(process.inputStream))
@@ -2516,9 +2733,9 @@ All files created here persist inside the application.
             withContext(Dispatchers.Main) { onLogLine(msg) }
             LocalCommandResult(1, msg, System.currentTimeMillis() - startTime)
         } finally {
-            if (process.isAlive) {
+            if (process.isAliveCompat) {
                 try {
-                    process.destroyForcibly()
+                    process.destroyForciblyCompat()
                 } catch (_: Exception) {}
             }
         }

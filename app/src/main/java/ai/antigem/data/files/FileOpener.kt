@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
 import java.io.File
+import ai.antigem.i18n.L
 
 /**
  * Hands files to other apps (video players, galleries, PDF readers, installers, share targets).
@@ -56,10 +57,14 @@ object FileOpener {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             clipData = ClipData.newRawUri(name, uri)
             // a mini app package: straight to AntiGem's own installer, the way a file manager hands an .apk to Android's
-            if (mime == ai.antigem.data.miniapps.MiniAppSigning.MIME && !forceChooser) setClassName(context, "ai.antigem.ui.miniapps.MiniAppInstallActivity")
+            // (signed: the installer opens AntiGem's own files only for AntiGem)
+            if (mime == ai.antigem.data.miniapps.MiniAppSigning.MIME && !forceChooser) {
+                setClassName(context, "ai.antigem.ui.miniapps.MiniAppInstallActivity")
+                IncomingUriGuard.signOwn(context, this)
+            }
         }
         return try {
-            val start = if (forceChooser) Intent.createChooser(intent, "Open \"$name\" with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) else intent
+            val start = if (forceChooser) IncomingUriGuard.chooser(context, intent, L.files.fileOpener.openNameWith(name)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) else intent
             context.startActivity(start)
             null
         } catch (_: ActivityNotFoundException) {
@@ -69,18 +74,18 @@ object FileOpener {
                     setDataAndType(uri, "*/*")
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                context.startActivity(Intent.createChooser(generic, "Open \"$name\" with").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                context.startActivity(IncomingUriGuard.chooser(context, generic, L.files.fileOpener.openNameWith(name)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 null
             } catch (_: Exception) {
-                "No app on this phone can open $name"
+                L.files.fileOpener.noAppOnThisPhoneCan(name)
             }
         } catch (e: Exception) {
-            e.message ?: "Could not open $name"
+            e.message ?: L.files.fileOpener.couldNotOpenName(name)
         }
     }
 
     fun share(context: Context, uris: List<Pair<Uri, String>>): String? {
-        if (uris.isEmpty()) return "Nothing to share"
+        if (uris.isEmpty()) return L.files.fileOpener.nothingToShare
         val mimes = uris.map { FileKinds.mimeOf(it.second) }.distinct()
         val mime = when {
             mimes.size == 1 -> mimes.first()
@@ -98,10 +103,10 @@ object FileOpener {
             clipData = ClipData.newRawUri(uris.first().second, uris.first().first).also { c -> uris.drop(1).forEach { c.addItem(ClipData.Item(it.first)) } }
         }
         return try {
-            context.startActivity(Intent.createChooser(intent, if (uris.size == 1) "Share ${uris.first().second}" else "Share ${uris.size} files").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(IncomingUriGuard.chooser(context, intent, if (uris.size == 1) L.files.fileOpener.shareValue(uris.first().second) else L.files.fileOpener.shareUriscountFiles(uris.size)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             null
         } catch (e: Exception) {
-            e.message ?: "Could not share"
+            e.message ?: L.files.fileOpener.couldNotShare
         }
     }
 }

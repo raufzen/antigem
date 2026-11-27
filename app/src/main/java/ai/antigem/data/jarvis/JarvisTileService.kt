@@ -7,11 +7,13 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import ai.antigem.MainActivity
+import ai.antigem.i18n.L
 
 /**
  * The "Jarvis" Quick Settings tile: one tap talks to Jarvis from anywhere. While hands-free mode runs it starts
- * listening right away (screen off works); while AntiGem runs in the background it listens without opening the app
- * ([JarvisTalkActivity]); otherwise it opens the app and starts listening there.
+ * listening right away; while AntiGem runs in the background it listens without opening the app
+ * ([JarvisTalkActivity]); otherwise it opens the app and starts listening there. On the lock screen the phone is
+ * unlocked first.
  */
 class JarvisTileService : TileService() {
 
@@ -21,7 +23,7 @@ class JarvisTileService : TileService() {
         qsTile?.apply {
             state = if (JarvisPreferences.enabled.value) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             label = "Jarvis"
-            if (Build.VERSION.SDK_INT >= 29) subtitle = if (JarvisPreferences.handsFree.value) "Hands-free" else if (JarvisPreferences.enabled.value) "Tap to talk" else "Off"
+            if (Build.VERSION.SDK_INT >= 29) subtitle = if (JarvisPreferences.handsFree.value) L.jarvis.tileService.handsFree else if (JarvisPreferences.enabled.value) L.jarvis.tileService.tapToTalk else L.jarvis.tileService.off
             updateTile()
         }
     }
@@ -31,7 +33,9 @@ class JarvisTileService : TileService() {
         super.onClick()
         JarvisPreferences.init(this)
         if (JarvisController.isAttached && JarvisPreferences.enabled.value && JarvisPreferences.handsFree.value) {
-            runCatching { startService(Intent(this, JarvisService::class.java).setAction(JarvisService.ACTION_TALK)) }
+            val talk = { runCatching { startService(Intent(this, JarvisService::class.java).setAction(JarvisService.ACTION_TALK)) }; Unit }
+            // from the lock screen only after unlocking: whoever holds a locked phone must not talk to Jarvis
+            if (isLocked) unlockAndRun { talk() } else talk()
             return
         }
         if (JarvisController.isAttached && JarvisPreferences.enabled.value && JarvisPreferences.voiceAssistant.value) {
@@ -43,6 +47,8 @@ class JarvisTileService : TileService() {
         val intent = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(EXTRA_TALK, JarvisPreferences.enabled.value)
+        // MainActivity is exported: it starts listening only for an intent the app signed
+        ai.antigem.data.security.AppIntentKey.sign(this, intent, ai.antigem.data.security.AppIntentKey.JARVIS_TALK)
         open(intent, 77)
     }
 

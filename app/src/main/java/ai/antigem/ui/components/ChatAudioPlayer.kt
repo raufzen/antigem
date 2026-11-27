@@ -37,6 +37,7 @@ import androidx.annotation.RequiresApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import ai.antigem.i18n.L
 
 @RequiresApi(Build.VERSION_CODES.M)
 private class InMemoryMediaDataSource(private val data: ByteArray) : android.media.MediaDataSource() {
@@ -70,14 +71,16 @@ fun ChatAudioPlayer(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var isPlaying by remember { mutableStateOf(false) }
-    var isBuffering by remember { mutableStateOf(false) }
-    var currentPositionMs by remember { mutableStateOf(0) }
-    var durationMs by remember { mutableStateOf((attachment.durationSeconds * 1000).coerceAtLeast(1000)) }
-    var isPrepared by remember { mutableStateOf(false) }
-    var hasError by remember { mutableStateOf(false) }
+    // keyed on the attachment: the DisposableEffect below releases the player when the id changes, so a new
+    // attachment in this slot gets a new player and fresh state
+    var isPlaying by remember(attachment.id) { mutableStateOf(false) }
+    var isBuffering by remember(attachment.id) { mutableStateOf(false) }
+    var currentPositionMs by remember(attachment.id) { mutableStateOf(0) }
+    var durationMs by remember(attachment.id) { mutableStateOf((attachment.durationSeconds * 1000).coerceAtLeast(1000)) }
+    var isPrepared by remember(attachment.id) { mutableStateOf(false) }
+    var hasError by remember(attachment.id) { mutableStateOf(false) }
 
-    val mediaPlayer = remember {
+    val mediaPlayer = remember(attachment.id) {
         MediaPlayer().apply {
             setOnCompletionListener {
                 isPlaying = false
@@ -261,7 +264,7 @@ fun ChatAudioPlayer(
                         ) { playing ->
                             Icon(
                                 imageVector = if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = if (playing) "Pause" else "Play",
+                                contentDescription = if (playing) L.common.pause else L.components.chatAudioPlayer.play,
                                 tint = Color.White,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -288,7 +291,7 @@ fun ChatAudioPlayer(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (attachment.name.isNotBlank()) attachment.name else "Voice Note",
+                            text = if (attachment.name.isNotBlank()) attachment.name else L.components.chatAudioPlayer.voiceNote,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface

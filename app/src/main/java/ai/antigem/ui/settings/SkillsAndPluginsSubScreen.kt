@@ -21,6 +21,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,6 +42,12 @@ import ai.antigem.theme.*
 import ai.antigem.ui.components.MarkdownContent
 import ai.antigem.domain.model.AgentKind
 import ai.antigem.ui.components.AgyAccent
+import ai.antigem.i18n.L
+import ai.antigem.data.skills.AgentSkillDto
+import ai.antigem.data.skills.AgentSkillsClient
+import ai.antigem.ui.components.AppToastHelper
+import ai.antigem.ui.components.ChatToastType
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,9 +107,9 @@ fun SkillsAndPluginsSubScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                        Text(text = errorMessage, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f))
+                        Text(text = errorMessage, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite })
                         IconButton(onClick = onClearStatus, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Close, contentDescription = L.common.dismiss, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
@@ -118,9 +130,9 @@ fun SkillsAndPluginsSubScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(Icons.Default.CheckCircle, contentDescription = null, tint = QuotaGreen, modifier = Modifier.size(18.dp))
-                        Text(text = statusMessage, fontSize = 12.5.sp, color = QuotaGreen, modifier = Modifier.weight(1f))
+                        Text(text = statusMessage, fontSize = 12.5.sp, color = QuotaGreen, modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite })
                         IconButton(onClick = onClearStatus, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Close, contentDescription = L.common.dismiss, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
@@ -159,7 +171,7 @@ fun SkillsAndPluginsSubScreen(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Icon(Icons.Outlined.Storefront, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Text("Store", fontSize = 13.sp, fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal)
+                            Text(L.settings.skillsAndPlugins.store, fontSize = 13.sp, fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal)
                         }
                     }
                 )
@@ -169,8 +181,8 @@ fun SkillsAndPluginsSubScreen(
             when (selectedTab) {
                 0 -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     GitHubActionRow(
-                        "Add skills from GitHub", "Pick skills from any repository; update or remove the ones you added",
-                        "From GitHub", AgyAccent
+                        L.settings.skillsAndPlugins.addSkillsFromGithub, L.settings.skillsAndPlugins.pickSkillsFromAnyRepositoryUpdate,
+                        L.settings.skillsAndPlugins.fromGithub, AgyAccent
                     ) { showSkillsFromGitHub = true }
                     SkillsTabView(
                         skills = skills,
@@ -183,8 +195,8 @@ fun SkillsAndPluginsSubScreen(
                 }
                 1 -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     GitHubActionRow(
-                        "Install a plugin from GitHub", "Antigravity or Claude Code plugins, with agy's own installer",
-                        "From GitHub", AgyAccent
+                        L.settings.skillsAndPlugins.installAPluginFromGithub, L.settings.skillsAndPlugins.antigravityOrClaudeCodePluginsWith,
+                        L.settings.skillsAndPlugins.fromGithub, AgyAccent
                     ) { showPluginFromGitHub = true }
                     InstalledPluginsTabView(
                         plugins = installedPlugins,
@@ -213,7 +225,7 @@ fun SkillsAndPluginsSubScreen(
     }
 
     if (showSkillsFromGitHub) {
-        AgentSkillsDialog(AgentKind.AGY, AgyAccent, "Antigravity skills") {
+        AgentSkillsDialog(AgentKind.AGY, AgyAccent, L.settings.skillsAndPlugins.antigravitySkills) {
             showSkillsFromGitHub = false
             onRefreshSkills()
         }
@@ -247,6 +259,39 @@ private fun SkillsTabView(
     onRefresh: () -> Unit,
     onSkillClick: (SkillDefinitionDto) -> Unit
 ) {
+    // the user's own skills folder (from the bridge): which listed skills can be turned off, and the ones already off
+    // (Antigravity has no switch: a turned-off skill is moved aside, so Antigravity no longer lists it)
+    val scope = rememberCoroutineScope()
+    var userDir by remember { mutableStateOf("") }
+    var userSkills by remember { mutableStateOf<List<AgentSkillDto>>(emptyList()) }
+    var toggling by remember { mutableStateOf<String?>(null) }
+    suspend fun loadUserSkills() {
+        AgentSkillsClient.list(AgentKind.AGY).onSuccess { userDir = it.dir; userSkills = it.skills }
+    }
+    LaunchedEffect(skills) { loadUserSkills() }
+    val prefix = userDir.trimEnd('/').let { if (it.isBlank()) "" else "$it/" }
+    fun idOf(path: String): String? {
+        val p = path.removePrefix("file://")
+        return if (prefix.isNotEmpty() && p.startsWith(prefix)) p.removePrefix(prefix).substringBefore('/').takeIf { it.isNotBlank() } else null
+    }
+    val userIds = userSkills.map { it.id }.toSet()
+    val offIds = userSkills.filter { !it.enabled }.map { it.id }.toSet()
+    val shown = skills.filter { s -> idOf(s.path)?.let { it !in offIds } ?: true }
+    val offSkills = if (filterScope == "WORKSPACE") emptyList() else userSkills.filter { !it.enabled }
+    fun toggle(id: String, name: String, on: Boolean) {
+        toggling = id
+        scope.launch {
+            AgentSkillsClient.setEnabled(AgentKind.AGY, id, on)
+                .onSuccess {
+                    AppToastHelper.showToast(if (on) L.settings.skillsAndPlugins.nameTurnedOnStartANew(name) else L.settings.skillsAndPlugins.nameTurnedOffNewChatsWont(name), ChatToastType.SUCCESS)
+                }
+                .onFailure { AppToastHelper.showToast(L.settings.skillsAndPlugins.couldNotChangeNameError(name, it.message.orEmpty()), ChatToastType.ERROR) }
+            loadUserSkills()
+            toggling = null
+            onRefresh()
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -261,7 +306,7 @@ private fun SkillsTabView(
                 FilterChip(
                     selected = filterScope == "GLOBAL",
                     onClick = { onSetScope("GLOBAL") },
-                    label = { Text("Global (Default)", fontSize = 11.5.sp) },
+                    label = { Text(L.settings.skillsAndPlugins.globalDefault, fontSize = 11.5.sp) },
                     leadingIcon = if (filterScope == "GLOBAL") {
                         { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
                     } else null,
@@ -270,7 +315,7 @@ private fun SkillsTabView(
                 FilterChip(
                     selected = filterScope == "WORKSPACE",
                     onClick = { onSetScope("WORKSPACE") },
-                    label = { Text("Project / Workspace", fontSize = 11.5.sp) },
+                    label = { Text(L.settings.skillsAndPlugins.projectWorkspace, fontSize = 11.5.sp) },
                     leadingIcon = if (filterScope == "WORKSPACE") {
                         { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
                     } else null,
@@ -279,28 +324,28 @@ private fun SkillsTabView(
                 FilterChip(
                     selected = filterScope == "ALL",
                     onClick = { onSetScope("ALL") },
-                    label = { Text("All", fontSize = 11.5.sp) },
+                    label = { Text(L.settings.skillsAndPlugins.all, fontSize = 11.5.sp) },
                     shape = RoundedCornerShape(8.dp)
                 )
             }
 
             IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
                 if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = GeminiBlue)
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp).semantics { contentDescription = L.common.loading }, strokeWidth = 2.dp, color = GeminiBlue)
                 } else {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Refresh, contentDescription = L.common.refresh, modifier = Modifier.size(18.dp))
                 }
             }
         }
 
-        if (isLoading && skills.isEmpty()) {
+        if (isLoading && skills.isEmpty() && offSkills.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = GeminiBlue)
+                CircularProgressIndicator(modifier = Modifier.semantics { contentDescription = L.common.loading }, color = GeminiBlue)
             }
-        } else if (skills.isEmpty()) {
+        } else if (shown.isEmpty() && offSkills.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(
-                    text = if (filterScope == "WORKSPACE") "No workspace-scoped skills (.agents/skills/) found for active project." else "No skills discovered.",
+                    text = if (filterScope == "WORKSPACE") L.settings.skillsAndPlugins.noWorkspaceScopedSkillsAgentsSkills else L.settings.skillsAndPlugins.noSkillsDiscovered,
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
@@ -315,8 +360,21 @@ private fun SkillsTabView(
                 userScrollEnabled = bounce.userScrollEnabled,
                 overscrollEffect = bounce.overscrollEffect
             ) {
-                items(skills, key = { it.path.ifBlank { it.name } }) { skill ->
-                    SkillItemCard(skill = skill, onClick = { onSkillClick(skill) })
+                items(shown, key = { it.path.ifBlank { it.name } }) { skill ->
+                    // a skill of the user's own folder can be turned off
+                    val id = idOf(skill.path)?.takeIf { it in userIds }
+                    SkillItemCard(
+                        skill = skill, onClick = { onSkillClick(skill) },
+                        enabled = if (id != null) true else null, busy = id != null && toggling == id,
+                        onToggle = id?.let { i -> { on: Boolean -> toggle(i, skill.name, on) } }
+                    )
+                }
+                items(offSkills, key = { "off_" + it.id }) { s ->
+                    SkillItemCard(
+                        skill = SkillDefinitionDto(path = s.path + "/SKILL.md", name = s.id, displayName = s.name, description = s.description),
+                        onClick = {}, enabled = false, busy = toggling == s.id,
+                        onToggle = { on -> toggle(s.id, s.name, on) }
+                    )
                 }
             }
         }
@@ -326,7 +384,10 @@ private fun SkillsTabView(
 @Composable
 private fun SkillItemCard(
     skill: SkillDefinitionDto,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    enabled: Boolean? = null, // null: no switch (built-in, plugin and project skills)
+    busy: Boolean = false,
+    onToggle: ((Boolean) -> Unit)? = null
 ) {
     val categoryColor = when (skill.discoveryCategory) {
         "DISCOVERY_CATEGORY_BUILTIN" -> ClaudeTerracotta
@@ -336,16 +397,16 @@ private fun SkillItemCard(
     }
 
     val categoryBadgeText = when (skill.discoveryCategory) {
-        "DISCOVERY_CATEGORY_BUILTIN" -> "Built-in"
-        "DISCOVERY_CATEGORY_INSTALLED" -> "Installed Plugin"
-        "DISCOVERY_CATEGORY_WORKSPACE" -> "Workspace"
-        else -> "Global"
+        "DISCOVERY_CATEGORY_BUILTIN" -> L.common.builtIn
+        "DISCOVERY_CATEGORY_INSTALLED" -> L.settings.skillsAndPlugins.installedPlugin
+        "DISCOVERY_CATEGORY_WORKSPACE" -> L.common.workspace
+        else -> L.common.global
     }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() },
+            .clickable(role = Role.Button) { onClick() },
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
@@ -426,10 +487,24 @@ private fun SkillItemCard(
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
+                if (onToggle != null && enabled != null) {
+                    Spacer(Modifier.width(6.dp))
+                    if (busy) CircularProgressIndicator(Modifier.size(18.dp).semantics { contentDescription = L.common.working }, strokeWidth = 2.dp, color = AgyAccent)
+                    else Switch(
+                        checked = enabled, onCheckedChange = onToggle, colors = SwitchDefaults.colors(checkedTrackColor = AgyAccent),
+                        // TalkBack: which skill this turns on or off
+                        modifier = Modifier.semantics { contentDescription = "/${skill.name}" }
+                    )
+                }
             }
 
+            if (enabled == false) Text(
+                L.settings.skillsAndPlugins.offKeptAsideAntigravityDoesntLoad,
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+            )
+
             Text(
-                text = skill.description.ifBlank { "Agent capability instructions and workflows" },
+                text = skill.description.ifBlank { L.settings.skillsAndPlugins.agentCapabilityInstructionsAndWorkflows },
                 fontSize = 12.5.sp,
                 lineHeight = 17.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
@@ -451,8 +526,8 @@ private fun SkillItemCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("View SKILL.md", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                if (enabled != false) Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(L.settings.skillsAndPlugins.viewSkillMd, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                 }
             }
@@ -471,6 +546,11 @@ private fun InstalledPluginsTabView(
     onDeletePlugin: (String, String) -> Unit,
     onSkillClick: (String) -> Unit
 ) {
+    // agy's plugin switches (~/.gemini/config/config.json, changed with `agy plugin enable|disable`)
+    val scope = rememberCoroutineScope()
+    var states by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var toggling by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(plugins) { AgentSkillsClient.agyPluginStates().onSuccess { states = it } }
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -481,27 +561,28 @@ private fun InstalledPluginsTabView(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "Installed Bundles & Extensions",
+                text = L.settings.skillsAndPlugins.installedBundlesExtensions,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                modifier = Modifier.semantics { heading() }
             )
             IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
                 if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = GeminiBlue)
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp).semantics { contentDescription = L.common.loading }, strokeWidth = 2.dp, color = GeminiBlue)
                 } else {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Refresh, contentDescription = L.common.refresh, modifier = Modifier.size(18.dp))
                 }
             }
         }
 
         if (isLoading && plugins.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = GeminiBlue)
+                CircularProgressIndicator(modifier = Modifier.semantics { contentDescription = L.common.loading }, color = GeminiBlue)
             }
         } else if (plugins.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text("No plugin bundles installed in ~/.gemini/config/plugins/.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                Text(L.settings.skillsAndPlugins.noPluginBundlesInstalledInGemini, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
             }
         } else {
             val listState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -514,11 +595,26 @@ private fun InstalledPluginsTabView(
                 overscrollEffect = bounce.overscrollEffect
             ) {
                 items(plugins, key = { it.name }) { plugin ->
+                    val title = plugin.displayName.ifBlank { plugin.name }
                     InstalledPluginCard(
                         plugin = plugin,
                         isDeleting = deletingPluginId == plugin.name,
-                        onDelete = { onDeletePlugin(plugin.name, plugin.displayName.ifBlank { plugin.name }) },
-                        onSkillClick = onSkillClick
+                        onDelete = { onDeletePlugin(plugin.name, title) },
+                        onSkillClick = onSkillClick,
+                        enabled = states[plugin.name] != false,
+                        toggling = toggling == plugin.name,
+                        onToggle = { on ->
+                            toggling = plugin.name
+                            scope.launch {
+                                AgentSkillsClient.setAgyPluginEnabled(plugin.name, on)
+                                    .onSuccess {
+                                        AppToastHelper.showToast(if (on) L.settings.skillsAndPlugins.nameTurnedOnStartANew(title) else L.settings.skillsAndPlugins.nameTurnedOffNewChatsWont(title), ChatToastType.SUCCESS)
+                                    }
+                                    .onFailure { AppToastHelper.showToast(L.settings.skillsAndPlugins.couldNotChangeNameError(title, it.message.orEmpty()), ChatToastType.ERROR) }
+                                AgentSkillsClient.agyPluginStates().onSuccess { states = it }
+                                toggling = null
+                            }
+                        }
                     )
                 }
             }
@@ -531,14 +627,17 @@ private fun InstalledPluginCard(
     plugin: InstalledPluginDto,
     isDeleting: Boolean,
     onDelete: () -> Unit,
-    onSkillClick: (String) -> Unit
+    onSkillClick: (String) -> Unit,
+    enabled: Boolean = true,
+    toggling: Boolean = false,
+    onToggle: ((Boolean) -> Unit)? = null
 ) {
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
 
     if (showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
-            title = { Text("Delete Plugin?") },
+            title = { Text(L.settings.skillsAndPlugins.deletePlugin) },
             text = {
                 Text("Are you sure you want to delete '${plugin.displayName.ifBlank { plugin.name }}' (${plugin.name})? This will remove its bundled skills from ~/.gemini/config/plugins/.")
             },
@@ -550,12 +649,12 @@ private fun InstalledPluginCard(
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Delete", fontWeight = FontWeight.Bold)
+                    Text(L.common.delete, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text("Cancel")
+                    Text(L.common.cancel)
                 }
             }
         )
@@ -641,13 +740,23 @@ private fun InstalledPluginCard(
                         color = GeminiBlue.copy(alpha = 0.12f)
                     ) {
                         Text(
-                            text = "Global",
+                            text = L.common.global,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             color = GeminiBlue,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
+                }
+
+                // off: agy keeps it installed but loads it in no chat
+                if (onToggle != null) {
+                    if (toggling) CircularProgressIndicator(Modifier.size(18.dp).semantics { contentDescription = L.common.working }, strokeWidth = 2.dp, color = AgyAccent)
+                    else Switch(
+                        checked = enabled, onCheckedChange = onToggle, enabled = !isDeleting, colors = SwitchDefaults.colors(checkedTrackColor = AgyAccent),
+                        // TalkBack: which plugin this turns on or off
+                        modifier = Modifier.semantics { contentDescription = plugin.displayName.ifBlank { plugin.name } }
+                    )
                 }
 
                 IconButton(
@@ -657,14 +766,14 @@ private fun InstalledPluginCard(
                 ) {
                     if (isDeleting) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(16.dp).semantics { contentDescription = L.common.removing },
                             strokeWidth = 2.dp,
                             color = MaterialTheme.colorScheme.error
                         )
                     } else {
                         Icon(
                             Icons.Outlined.Delete,
-                            contentDescription = "Delete Plugin",
+                            contentDescription = L.settings.skillsAndPlugins.deletePlugin2,
                             tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
                             modifier = Modifier.size(18.dp)
                         )
@@ -725,27 +834,28 @@ private fun GooglePluginsStoreTabView(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
-                text = "Official 'Build with Google' Plugins",
+                text = L.settings.skillsAndPlugins.officialBuildWithGooglePlugins,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                modifier = Modifier.semantics { heading() }
             )
             IconButton(onClick = onRefresh, modifier = Modifier.size(32.dp)) {
                 if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = GeminiBlue)
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp).semantics { contentDescription = L.common.loading }, strokeWidth = 2.dp, color = GeminiBlue)
                 } else {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Refresh, contentDescription = L.common.refresh, modifier = Modifier.size(18.dp))
                 }
             }
         }
 
         if (isLoading && catalog.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = GeminiBlue)
+                CircularProgressIndicator(modifier = Modifier.semantics { contentDescription = L.common.loading }, color = GeminiBlue)
             }
         } else if (catalog.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Text("No official Google plugins catalog available.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                Text(L.settings.skillsAndPlugins.noOfficialGooglePluginsCatalogAvailable, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
             }
         } else {
             val listState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -851,7 +961,7 @@ private fun GoogleCatalogPluginCard(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(Icons.Default.Check, contentDescription = null, tint = QuotaGreen, modifier = Modifier.size(14.dp))
-                            Text("Installed", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = QuotaGreen)
+                            Text(L.common.installed, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = QuotaGreen)
                         }
                     }
                 } else {
@@ -864,11 +974,11 @@ private fun GoogleCatalogPluginCard(
                         modifier = Modifier.height(32.dp)
                     ) {
                         if (isInstalling) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp).semantics { contentDescription = L.common.installing }, strokeWidth = 2.dp, color = Color.White)
                         } else {
                             Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Install", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(L.common.install, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -888,7 +998,7 @@ private fun GoogleCatalogPluginCard(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "Versions:",
+                        text = L.settings.skillsAndPlugins.versions,
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )
@@ -941,7 +1051,8 @@ fun SkillDetailMarkdownDialog(
                                 fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.semantics { heading() }
                             )
                             if (!skill.displayName.isNullOrBlank()) {
                                 Text(
@@ -961,7 +1072,7 @@ fun SkillDetailMarkdownDialog(
                         )
                     }
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
+                        Icon(Icons.Default.Close, contentDescription = L.common.close)
                     }
                 }
 
@@ -983,7 +1094,7 @@ fun SkillDetailMarkdownDialog(
                         }
                     } else {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No markdown content found in SKILL.md", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                            Text(L.settings.skillsAndPlugins.noMarkdownContentFoundInSkill, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                         }
                     }
                 }

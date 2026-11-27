@@ -35,6 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -50,6 +53,7 @@ import ai.antigem.theme.ClaudeTerracotta
 import ai.antigem.theme.QuotaGreen
 import ai.antigem.ui.components.MarkdownBlock
 import kotlinx.coroutines.delay
+import ai.antigem.i18n.L
 
 /**
  * A run of agent steps folded into one pill: "Working 12s · 5 tool calls · 2 running" while the agent works,
@@ -70,7 +74,7 @@ fun StepGroupPill(group: ChatFeedItem.StepGroup, onToggle: () -> Unit, modifier:
     val counts = remember(summary, hasClock, accent, danger) {
         buildAnnotatedString {
             val parts = mutableListOf<Pair<String, Color?>>()
-            if (summary.tools > 0) parts += plural(summary.tools, "tool call", "tool calls") to null
+            if (summary.tools > 0) parts += plural(summary.tools, L.chat.stepGroupPill.toolCall, L.chat.stepGroupPill.toolCalls) to null
             if (summary.thoughts > 0) parts += plural(summary.thoughts, "thought", "thoughts") to null
             if (summary.running > 0) parts += "${summary.running} running" to accent
             else if (summary.thinking) parts += "thinking" to accent
@@ -105,7 +109,13 @@ fun StepGroupPill(group: ChatFeedItem.StepGroup, onToggle: () -> Unit, modifier:
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(10.dp))
-                .clickable(onClick = onToggle)
+                .clickable(
+                    onClickLabel = if (group.expanded) L.chat.stepGroupPill.hideSteps else L.chat.stepGroupPill.showSteps,
+                    role = Role.Button,
+                    onClick = onToggle
+                )
+                // TalkBack: "…, Collapsed, Button, double-tap to show steps" (the ticking clock is not in here on purpose)
+                .semantics { stateDescription = if (group.expanded) L.components.a11y.expanded else L.components.a11y.collapsed }
                 .padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -125,8 +135,8 @@ fun StepGroupPill(group: ChatFeedItem.StepGroup, onToggle: () -> Unit, modifier:
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     when {
                         group.live && group.startedAt > 0 -> WorkingClock(group.startedAt, titleStyle)
-                        group.live -> Text("Working", style = titleStyle, maxLines = 1)
-                        worked -> Text("Worked ${elapsed(group.endedAt - group.startedAt)}", style = titleStyle, maxLines = 1)
+                        group.live -> Text(L.chat.stepGroupPill.working, style = titleStyle, maxLines = 1)
+                        worked -> Text(L.chat.stepGroupPill.workedElapsed(elapsed(group.endedAt - group.startedAt)), style = titleStyle, maxLines = 1)
                     }
                     Text(
                         text = counts,
@@ -148,7 +158,7 @@ fun StepGroupPill(group: ChatFeedItem.StepGroup, onToggle: () -> Unit, modifier:
             Spacer(modifier = Modifier.width(6.dp))
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = if (group.expanded) "Hide steps" else "Show steps",
+                contentDescription = null,
                 tint = muted.copy(alpha = 0.7f),
                 modifier = Modifier
                     .size(18.dp)
@@ -168,7 +178,7 @@ private fun WorkingClock(startedAt: Long, style: TextStyle) {
             delay(1_000L - (now - startedAt).mod(1_000L))
         }
     }
-    Text("Working ${elapsed(now - startedAt)}", style = style, maxLines = 1)
+    Text(L.chat.stepGroupPill.workingElapsed(elapsed(now - startedAt)), style = style, maxLines = 1)
 }
 
 /** What the pill says about its steps. */
@@ -224,23 +234,23 @@ private fun failed(t: ToolCall): Boolean =
 
 /** One line about a step: "Running: npm test", "Read: src/App.kt", "Thinking…", "Thought: Checking the config". */
 private fun stepLabel(step: ChatFeedItem.AssistantBlock): String? = when (val block = step.block) {
-    is MarkdownBlock.AgentThought -> if (block.isStreaming) "Thinking…" else firstLine(block.thought)?.let { "Thought: $it" }
+    is MarkdownBlock.AgentThought -> if (block.isStreaming) L.chat.stepGroupPill.thinking else firstLine(block.thought)?.let { L.chat.stepGroupPill.thoughtValue(it) }
     is MarkdownBlock.AgentTool -> {
         val t = block.toolCall
         val runningNow = t.status == "RUNNING"
         val verb = when {
-            failed(t) -> "Failed"
-            t.status == "REJECTED" -> "Rejected"
+            failed(t) -> L.common.failed
+            t.status == "REJECTED" -> L.chat.stepGroupPill.rejected
             else -> when (t.toolType) {
-                ToolType.VIEW_FILE -> if (runningNow) "Reading" else "Read"
-                ToolType.EDIT_FILE -> if (runningNow) "Editing" else "Edited"
-                ToolType.LIST_DIR -> if (runningNow) "Listing" else "Listed"
-                ToolType.GREP_SEARCH, ToolType.FIND -> if (runningNow) "Searching" else "Searched"
-                ToolType.SEARCH_WEB -> if (runningNow) "Searching web" else "Searched web"
-                ToolType.READ_URL -> if (runningNow) "Fetching" else "Fetched"
-                ToolType.MATH -> if (runningNow) "Evaluating" else "Evaluated"
-                ToolType.MCP -> if (runningNow) "Running MCP" else "MCP"
-                else -> if (runningNow) "Running" else "Ran"
+                ToolType.VIEW_FILE -> if (runningNow) L.chat.stepGroupPill.reading else L.chat.stepGroupPill.read
+                ToolType.EDIT_FILE -> if (runningNow) L.chat.stepGroupPill.editing else L.chat.stepGroupPill.edited
+                ToolType.LIST_DIR -> if (runningNow) L.chat.stepGroupPill.listing else L.chat.stepGroupPill.listed
+                ToolType.GREP_SEARCH, ToolType.FIND -> if (runningNow) L.chat.stepGroupPill.searching else L.chat.stepGroupPill.searched
+                ToolType.SEARCH_WEB -> if (runningNow) L.chat.stepGroupPill.searchingWeb else L.chat.stepGroupPill.searchedWeb
+                ToolType.READ_URL -> if (runningNow) L.chat.stepGroupPill.fetching else L.chat.stepGroupPill.fetched
+                ToolType.MATH -> if (runningNow) L.chat.stepGroupPill.evaluating else L.chat.stepGroupPill.evaluated
+                ToolType.MCP -> if (runningNow) L.chat.stepGroupPill.runningMcp else "MCP"
+                else -> if (runningNow) L.common.running else L.chat.stepGroupPill.ran
             }
         }
         val target = firstLine(t.command)

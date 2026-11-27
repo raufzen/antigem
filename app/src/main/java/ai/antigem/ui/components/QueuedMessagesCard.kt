@@ -35,6 +35,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.antigem.domain.model.QueuedMessage
 import ai.antigem.theme.AppColors
+import ai.antigem.i18n.L
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 
 /**
  * Messages sent while the agent was working, waiting to be delivered (above the input box).
@@ -47,6 +54,7 @@ fun QueuedMessagesCard(
     onDelete: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val talkBackOn = rememberTalkBackOn()
     AnimatedVisibility(
         visible = messages.isNotEmpty(),
         enter = fadeIn() + expandVertically(),
@@ -69,28 +77,32 @@ fun QueuedMessagesCard(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = if (messages.size == 1) "1 queued message" else "${messages.size} queued messages",
+                        text = if (messages.size == 1) L.components.queuedMessagesCard.n1QueuedMessage else L.components.queuedMessagesCard.messagescountQueuedMessages(messages.size),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = AppColors.onBackground
+                        color = AppColors.onBackground,
+                        modifier = Modifier.semantics {
+                            heading()
+                            liveRegion = LiveRegionMode.Polite
+                        }
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = "Sends when the agent is done",
+                        text = L.components.queuedMessagesCard.sendsWhenTheAgentIsDone,
                         fontSize = 12.sp,
                         color = AppColors.textSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                messages.forEach { msg -> QueuedRow(msg, onSendNow, onDelete) }
+                messages.forEach { msg -> QueuedRow(msg, talkBackOn, onSendNow, onDelete) }
             }
         }
     }
 }
 
 @Composable
-private fun QueuedRow(msg: QueuedMessage, onSendNow: (String) -> Unit, onDelete: (String) -> Unit) {
+private fun QueuedRow(msg: QueuedMessage, talkBackOn: Boolean, onSendNow: (String) -> Unit, onDelete: (String) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -100,10 +112,11 @@ private fun QueuedRow(msg: QueuedMessage, onSendNow: (String) -> Unit, onDelete:
     ) {
         // hidden instructions (Jarvis' note, expanded commands) are not part of what the user wrote
         val label = ai.antigem.data.remote.PromptExpansion.collapse(msg.text).trim().ifBlank {
-            if (msg.attachmentCount == 1) "1 attachment" else "${msg.attachmentCount} attachments"
+            L.components.queuedMessagesCard.attachmentsCount(msg.attachmentCount)
         }
+        val cleanLabel = label.replace(Regex("\\s+"), " ").trim()
         Text(
-            text = label.replace(Regex("\\s+"), " ").trim(),
+            text = cleanLabel,
             fontSize = 13.sp,
             color = if (msg.text.isBlank()) AppColors.textSecondary else AppColors.onBackground,
             maxLines = 2,
@@ -120,23 +133,30 @@ private fun QueuedRow(msg: QueuedMessage, onSendNow: (String) -> Unit, onDelete:
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
                     .size(14.dp)
+                    .clearAndSetSemantics { contentDescription = L.common.loading }
             )
         }
         if (msg.canSendNow) {
-            IconButton(onClick = { onSendNow(msg.id) }, modifier = Modifier.size(36.dp)) {
+            IconButton(
+                onClick = { onSendNow(msg.id) },
+                modifier = Modifier.a11yMinTouchTarget(talkBackOn).size(36.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Rounded.ArrowUpward,
-                    contentDescription = "Send now: ${msg.text.take(60)}",
+                    contentDescription = L.components.queuedMessagesCard.sendNowValue(cleanLabel.take(60)),
                     tint = AppColors.onBackground,
                     modifier = Modifier.size(18.dp)
                 )
             }
         }
         if (msg.canDelete) {
-            IconButton(onClick = { onDelete(msg.id) }, modifier = Modifier.size(36.dp)) {
+            IconButton(
+                onClick = { onDelete(msg.id) },
+                modifier = Modifier.a11yMinTouchTarget(talkBackOn).size(36.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Rounded.Close,
-                    contentDescription = "Delete: ${msg.text.take(60)}",
+                    contentDescription = L.components.queuedMessagesCard.deleteValue(cleanLabel.take(60)),
                     tint = AppColors.textSecondary,
                     modifier = Modifier.size(18.dp)
                 )

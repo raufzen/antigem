@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.math.abs
 import kotlin.math.sin
+import ai.antigem.i18n.L
 
 /**
  * Jarvis' voice: queues what is to be said and plays it with the device's text-to-speech or an online voice
@@ -212,7 +213,7 @@ object JarvisVoice {
         val ok = ready.await()
         val engine = tts
         if (!ok || engine == null) {
-            _lastError.value = "The device's text-to-speech is not available."
+            _lastError.value = L.jarvis.voice.theDevicesTextToSpeechIs
             ttsReady = null
             tts = null
             return null
@@ -291,7 +292,7 @@ object JarvisVoice {
     private suspend fun playOnline(engine: String, text: String): Boolean {
         val key = JarvisPreferences.ttsApiKey.value.trim()
         if (key.isBlank()) {
-            _lastError.value = "No API key set for the online voice; using the device voice."
+            _lastError.value = L.jarvis.voice.noApiKeySetForThe
             return false
         }
         return try {
@@ -424,6 +425,43 @@ object JarvisVoice {
             am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
         }
     }
+
+    private var holdRequest: AudioFocusRequest? = null
+
+    /**
+     * While the user answers an approval question, other audio (music, videos, the browser) pauses instead of only
+     * getting quieter, so it can't answer for them. [on] = false gives the focus back.
+     */
+    fun holdMedia(on: Boolean) {
+        if (!inited) return
+        val am = app.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 26) {
+                if (on) {
+                    if (holdRequest != null) return
+                    val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                        .setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build()
+                        )
+                        .build()
+                    holdRequest = req
+                    am.requestAudioFocus(req)
+                } else {
+                    holdRequest?.let { am.abandonAudioFocusRequest(it) }
+                    holdRequest = null
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                if (on) am.requestAudioFocus(holdListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                else am.abandonAudioFocus(holdListener)
+            }
+        }
+    }
+
+    private val holdListener = AudioManager.OnAudioFocusChangeListener { }
 
     private fun abandonFocus() {
         val am = app.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return

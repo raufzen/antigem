@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import ai.antigem.i18n.L
 
 enum class DaemonStatus {
     STOPPED,
@@ -52,7 +53,7 @@ object IdeDaemonManager {
     private val _status = MutableStateFlow(DaemonStatus.STOPPED)
     val status: StateFlow<DaemonStatus> = _status.asStateFlow()
 
-    private val _statusMessage = MutableStateFlow("Offline")
+    private val _statusMessage = MutableStateFlow(L.daemon.ideDaemonManager.offline)
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
     private val _logs = MutableStateFlow<List<String>>(emptyList())
@@ -113,7 +114,7 @@ object IdeDaemonManager {
                     is ai.antigem.data.remote.SystemConnectionState.Connected -> {
                         _status.value = DaemonStatus.RUNNING
                         val ep = AuthPreferences.currentBridgeHttpUrl.removePrefix("http://").removePrefix("https://")
-                        _statusMessage.value = "Running on $ep"
+                        _statusMessage.value = L.daemon.ideDaemonManager.runningOnEp(ep)
                     }
                     is ai.antigem.data.remote.SystemConnectionState.Offline,
                     is ai.antigem.data.remote.SystemConnectionState.Error -> {
@@ -147,6 +148,15 @@ object IdeDaemonManager {
     fun setActiveTabPath(path: String?) {
         _activeTabPath.value = path
     }
+
+    /** Size and change time of each open file when it was last read: the IDE re-reads a file only when they change. */
+    private val diskStamps = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Long>>()
+
+    fun setDiskStamp(path: String, size: Long, modTime: Long) {
+        diskStamps[path] = size to modTime
+    }
+
+    fun diskStamp(path: String): Pair<Long, Long>? = diskStamps[path]
 
     fun setOpenTabs(tabs: List<OpenTab>) {
         _openTabs.value = tabs
@@ -228,6 +238,7 @@ object IdeDaemonManager {
     }
 
     fun closeTab(path: String) {
+        diskStamps.remove(path)
         val updated = _openTabs.value.filterNot { it.path == path }
         _openTabs.value = updated
         if (_activeTabPath.value == path) {
@@ -236,6 +247,7 @@ object IdeDaemonManager {
     }
 
     fun renameTab(oldPath: String, newPath: String, newName: String) {
+        diskStamps.remove(oldPath)?.let { diskStamps[newPath] = it }
         _openTabs.value = _openTabs.value.map { tab ->
             if (tab.path == oldPath) {
                 tab.copy(path = newPath, name = newName)
@@ -316,7 +328,7 @@ object IdeDaemonManager {
         if (isHealthy) {
             _status.value = DaemonStatus.RUNNING
             val ep = AuthPreferences.currentBridgeHttpUrl.removePrefix("http://").removePrefix("https://")
-            _statusMessage.value = "Running on $ep"
+            _statusMessage.value = L.daemon.ideDaemonManager.runningOnEp(ep)
             if (previousStatus != DaemonStatus.RUNNING) {
                 log("✅ Unified Bridge & IDE Daemon is online on ${AuthPreferences.currentBridgeHttpUrl}!")
                 _serverReconnectedEvent.tryEmit(Unit)

@@ -29,7 +29,8 @@ val LocalWebViewSlot = staticCompositionLocalOf<String?> { null }
  * a block scrolled away and back doesn't build, load and draw its page again. A block's view is parked (paused, off
  * screen) when it scrolls away and handed back when it returns.
  *
- * So it can't run the phone out of memory: at most [MAX_PARKED] views are parked (the least recently seen go first);
+ * So it can't run the phone out of memory: at most [maxParked] views are parked (the least recently seen go first:
+ * [MAX_PARKED] on a phone with a large heap, half that on a smaller one);
  * every parked view is let go when Android says memory is low, or before a new view is built while memory is low; a
  * view whose renderer died is dropped (and built again if it is on screen) instead of crashing the app. Everything is
  * destroyed by [close], when the chat is left.
@@ -44,6 +45,9 @@ class ChatWebViewCache(context: Context) {
 
     private val appContext = context.applicationContext
     private val activityManager = appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+
+    /** Parked views kept for this phone: [MAX_PARKED] with a large heap of 512 MB or more, half that below it. */
+    private val maxParked = activityManager?.let { if (it.isLowRamDevice || it.largeMemoryClass < 512) MAX_PARKED / 2 else MAX_PARKED } ?: MAX_PARKED
 
     /** Access order: the first entries are the least recently seen. */
     private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
@@ -62,7 +66,7 @@ class ChatWebViewCache(context: Context) {
                 level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> dropParked(0)
                 level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> Unit
                 level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> dropParked(0)
-                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> dropParked(MAX_PARKED / 2)
+                level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE -> dropParked(maxParked / 2)
             }
         }
 
@@ -96,7 +100,7 @@ class ChatWebViewCache(context: Context) {
         if (entry != null || closed) {
             val view = create()
             watch(view)
-            dlog("obtain UNCACHED slot=$slot closed=$closed busy=${entry?.let { wvInfo(it.view) }} new=${wvId(view)}")
+            dlog("obtain UNCACHED slot=${slot} closed=${closed} busy=${entry?.let { wvInfo(it.view) }} new=${wvId(view)}")
             return view
         }
         if (isMemoryLow()) dropParked(0)
@@ -104,7 +108,7 @@ class ChatWebViewCache(context: Context) {
         watch(view)
         entries[slot] = Entry(view, owner)
         owners[view] = this
-        dlog("obtain NEW slot=$slot view=${wvId(view)} cached=${entries.size}")
+        dlog("obtain NEW slot=${slot} view=${wvId(view)} cached=${entries.size}")
         return view
     }
 
@@ -115,18 +119,18 @@ class ChatWebViewCache(context: Context) {
     fun release(slot: String, view: WebView, owner: Any) {
         val entry = entries[slot]
         if (closed || entry == null || entry.view !== view) {
-            dlog("release DESTROY slot=$slot ${wvInfo(view)} closed=$closed entry=${entry?.let { wvId(it.view) }}")
+            dlog("release DESTROY slot=${slot} ${wvInfo(view)} closed=${closed} entry=${entry?.let { wvId(it.view) }}")
             destroyView(view)
             return
         }
         if (entry.owner !== owner) {
-            dlog("release STALE slot=$slot ${wvInfo(view)} (taken by another build)")
+            dlog("release STALE slot=${slot} ${wvInfo(view)} (taken by another build)")
             return
         }
         entry.owner = null
         runCatching { view.onPause() }
-        dlog("release PARK slot=$slot ${wvInfo(view)} parked=${entries.values.count { !it.inUse }}")
-        dropParked(if (isMemoryLow()) 0 else MAX_PARKED)
+        dlog("release PARK slot=${slot} ${wvInfo(view)} parked=${entries.values.count { !it.inUse }}")
+        dropParked(if (isMemoryLow()) 0 else maxParked)
     }
 
     fun height(slot: String): Int? = heights[slot]
@@ -158,7 +162,7 @@ class ChatWebViewCache(context: Context) {
         while (iter.hasNext() && parked > keep) {
             val entry = iter.next()
             if (entry.inUse) continue
-            dlog("dropParked keep=$keep ${wvInfo(entry.view)}")
+            dlog("dropParked keep=${keep} ${wvInfo(entry.view)}")
             iter.remove()
             destroyView(entry.view)
             parked--
@@ -167,7 +171,7 @@ class ChatWebViewCache(context: Context) {
 
     private fun dropDead(view: WebView) {
         val slot = entries.entries.firstOrNull { it.value.view === view }?.key
-        dlog("rendererGone slot=$slot ${wvInfo(view)}")
+        dlog("rendererGone slot=${slot} ${wvInfo(view)}")
         if (slot != null) {
             val entry = entries.remove(slot)
             if (entry?.inUse == true) generations[slot] = generation(slot) + 1
@@ -205,7 +209,7 @@ class ChatWebViewCache(context: Context) {
             }
         }
 
-        /** Parked (off screen) views kept per chat. */
+        /** Parked (off screen) views kept per chat on a phone with a large heap (see maxParked). */
         const val MAX_PARKED = 12
 
         private val owners = WeakHashMap<WebView, ChatWebViewCache>()
@@ -252,7 +256,7 @@ fun KeptWebView(
     val cache = LocalChatWebViewCache.current
     val item = LocalWebViewSlot.current
     if (!keep || cache == null || item == null) {
-        ChatWebViewCache.dlog("KeptWebView plain part=$part keep=$keep cache=${cache != null} item=$item")
+        ChatWebViewCache.dlog("KeptWebView plain part=${part} keep=${keep} cache=${cache != null} item=${item}")
         AndroidView(factory = factory, update = update, onRelease = { ChatWebViewCache.destroyView(it) }, modifier = modifier)
         return
     }
@@ -263,7 +267,7 @@ fun KeptWebView(
         AndroidView(
             factory = { ctx -> cache.obtain(slot, owner) { factory(ctx) } },
             update = { wv ->
-                ChatWebViewCache.dlog("update slot=$slot ${ChatWebViewCache.wvInfo(wv)}")
+                ChatWebViewCache.dlog("update slot=${slot} ${ChatWebViewCache.wvInfo(wv)}")
                 update(wv)
             },
             onRelease = { cache.release(slot, it, owner) },

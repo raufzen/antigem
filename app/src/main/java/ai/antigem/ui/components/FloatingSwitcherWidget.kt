@@ -6,6 +6,9 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,6 +55,9 @@ import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -60,6 +66,7 @@ import ai.antigem.AppViewMode
 import ai.antigem.theme.ClaudeTerracotta
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
+import ai.antigem.i18n.L
 
 /** Expanded panel: holding an icon / the collapse arrow this long flips VERTICAL <-> HORIZONTAL. */
 private const val ORIENTATION_HOLD_MS = 500L
@@ -129,6 +136,8 @@ fun FloatingSwitcherWidget(
     var lastInteractionTimestamp by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var isDragging by remember { mutableStateOf(false) }
     val hitState = remember { SwitcherHitState() }
+    // The collapsed pill's press ripple: its touch goes through the gesture handler, not a clickable, so it sends these
+    val pillInteractionSource = remember { MutableInteractionSource() }
 
     // Position model:
     // - pillX/pillY = top-left of the COLLAPSED pill inside the container (this is what is persisted).
@@ -307,8 +316,8 @@ fun FloatingSwitcherWidget(
                     .size(32.dp)
                     .clip(CircleShape)
                     .combinedClickable(
-                        onClickLabel = "Collapse Switcher",
-                        onLongClickLabel = "Toggle switcher orientation",
+                        onClickLabel = L.components.floatingSwitcherWidget.collapseSwitcher,
+                        onLongClickLabel = L.components.floatingSwitcherWidget.toggleSwitcherOrientation,
                         onLongClick = toggleOrientation,
                         onClick = {
                             lastInteractionTimestamp = System.currentTimeMillis()
@@ -319,7 +328,7 @@ fun FloatingSwitcherWidget(
             ) {
                 Icon(
                     imageVector = collapseArrowIcon,
-                    contentDescription = "Collapse Switcher",
+                    contentDescription = L.components.floatingSwitcherWidget.collapseSwitcher,
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
                     modifier = Modifier.size(18.dp)
                 )
@@ -350,13 +359,13 @@ fun FloatingSwitcherWidget(
                     else -> Icons.Outlined.ChatBubbleOutline
                 }
                 val contentDesc = when (id) {
-                    "chat" -> "Chat"
+                    "chat" -> L.common.chat
                     "ide" -> "IDE"
-                    "terminal" -> "Terminal"
-                    "browser" -> "Browser"
-                    "notes" -> "Notes"
-                    "files" -> "Files"
-                    "run" -> "Run"
+                    "terminal" -> L.common.terminal
+                    "browser" -> L.common.browser
+                    "notes" -> L.common.notes
+                    "files" -> L.common.files
+                    "run" -> L.common.run
                     else -> itemId
                 }
                 FloatingSwitcherItemButton(
@@ -405,6 +414,11 @@ fun FloatingSwitcherWidget(
                             toRoot(down.position)?.let { (it - hitState.tapRootPos).getDistance() <= doubleTapRadiusPx } == true
                         hitState.tapExpandPending = false
 
+                        // Collapsed pill: show the press (released on a tap, cancelled when the finger drags it)
+                        val pillPress = if (!isExpanded) {
+                            PressInteraction.Press(down.position).also { pillInteractionSource.tryEmit(it) }
+                        } else null
+
                         if (isSecondTap) {
                             // Double-tap on the pill: the first tap already opened the panel (instantly), the second
                             // closes it and jumps back to the previous screen (overview mode: the first tap opened the
@@ -416,6 +430,7 @@ fun FloatingSwitcherWidget(
                                 change.consume()
                                 if (!change.pressed) break
                             }
+                            pillPress?.let { pillInteractionSource.tryEmit(PressInteraction.Release(it)) }
                             collapse()
                             haptic.performHapticFeedback(HapticFeedbackType.Confirm)
                             currentOnNavigateBack()
@@ -436,6 +451,7 @@ fun FloatingSwitcherWidget(
                             overSlop = over
                         }
                         if (dragStart != null) {
+                            pillPress?.let { pillInteractionSource.tryEmit(PressInteraction.Cancel(it)) }
                             isDragging = true
                             moveBy(overSlop)
                             drag(dragStart.id) { change ->
@@ -446,10 +462,13 @@ fun FloatingSwitcherWidget(
                         } else if (!wasExpanded) {
                             val up = currentEvent.changes.firstOrNull { it.id == down.id }
                             if (up != null && !up.pressed) {
+                                pillPress?.let { pillInteractionSource.tryEmit(PressInteraction.Release(it)) }
                                 hitState.tapUpTimeMillis = up.uptimeMillis
                                 hitState.tapRootPos = toRoot(up.position) ?: Offset.Zero
                                 if (currentTapOpensOverview) currentOnOpenOverview() else expand()
                                 hitState.tapExpandPending = true
+                            } else {
+                                pillPress?.let { pillInteractionSource.tryEmit(PressInteraction.Cancel(it)) }
                             }
                         }
                     }
@@ -473,11 +492,16 @@ fun FloatingSwitcherWidget(
                         Row(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(24.dp))
+                                .indication(pillInteractionSource, ripple())
                                 .semantics {
-                                    onClick(label = if (tapOpensOverview) "Open page overview" else "Expand Switcher") {
+                                    onClick(label = if (tapOpensOverview) L.components.floatingSwitcherWidget.openPageOverview else L.components.floatingSwitcherWidget.expandSwitcher) {
                                         if (tapOpensOverview) onOpenOverview() else expand()
                                         true
                                     }
+                                    // the pill's double-tap "go back" is touch only (TalkBack's double-tap presses it)
+                                    customActions = listOf(
+                                        CustomAccessibilityAction(L.common.back) { onNavigateBack(); true }
+                                    )
                                 }
                                 .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -485,7 +509,7 @@ fun FloatingSwitcherWidget(
                         ) {
                             Icon(
                                 imageVector = handleIconOverride ?: floatingSwitcherHandleIcon(handleIcon),
-                                contentDescription = if (tapOpensOverview) "Open page overview" else "Expand Switcher",
+                                contentDescription = if (tapOpensOverview) L.components.floatingSwitcherWidget.openPageOverview else L.components.floatingSwitcherWidget.expandSwitcher,
                                 tint = ClaudeTerracotta,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -564,8 +588,10 @@ private fun FloatingSwitcherItemButton(
         modifier = Modifier
             .size(36.dp)
             .clip(CircleShape)
+            // TalkBack: the page shown now reads "Selected"
+            .semantics { selected = isSelected }
             .combinedClickable(
-                onLongClickLabel = "Toggle switcher orientation",
+                onLongClickLabel = L.components.floatingSwitcherWidget.toggleSwitcherOrientation,
                 onLongClick = onLongClick,
                 onClick = onClick
             )

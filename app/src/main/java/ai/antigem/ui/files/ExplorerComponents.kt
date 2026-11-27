@@ -45,6 +45,10 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import ai.antigem.i18n.L
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.stateDescription
 
 // ---------------- formatting ----------------
 
@@ -55,11 +59,13 @@ internal fun formatModified(millis: Long): String {
     val sameYear = now.get(Calendar.YEAR) == then.get(Calendar.YEAR)
     val sameDay = sameYear && now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
     val pattern = when {
-        sameDay -> "'Today' HH:mm"
+        sameDay -> "HH:mm"
         sameYear -> "MMM d, HH:mm"
         else -> "MMM d, yyyy"
     }
-    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(millis))
+    // date patterns stay code; only "Today" is a text
+    val shown = SimpleDateFormat(pattern, Locale.getDefault()).format(Date(millis))
+    return if (sameDay) L.files.explorerComponents.todayTime(shown) else shown
 }
 
 internal fun entrySubtitle(e: ExplorerEntry): String = if (e.isDir) {
@@ -67,7 +73,7 @@ internal fun entrySubtitle(e: ExplorerEntry): String = if (e.isDir) {
         e.childCount > 1000 -> "1000+ items"
         e.childCount == 1 -> "1 item"
         e.childCount > 1 -> "${e.childCount} items"
-        else -> "Empty"
+        else -> L.files.explorerComponents.empty
     }
     listOf(count, formatModified(e.modTime)).filter { it.isNotBlank() }.joinToString("  ·  ")
 } else {
@@ -127,7 +133,7 @@ internal fun EntryIcon(entry: ExplorerEntry, size: Dp, thumbnails: Boolean, corn
                     .background(MaterialTheme.colorScheme.surface),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Outlined.Link, contentDescription = "Link", tint = tint, modifier = Modifier.size(size * 0.26f))
+                Icon(Icons.Outlined.Link, contentDescription = L.files.explorerComponents.link, tint = tint, modifier = Modifier.size(size * 0.26f))
             }
         }
     }
@@ -144,6 +150,20 @@ private fun SelectionMark(selected: Boolean) {
         Surface(shape = CircleShape, color = Color.Transparent, border = BorderStroke(1.6.dp, MaterialTheme.colorScheme.outline), modifier = Modifier.size(22.dp)) {}
     }
 }
+
+/** What TalkBack offers on a tap: Open, or (while selecting) Select / Deselect. */
+private fun entryClickLabel(selecting: Boolean, selected: Boolean): String = when {
+    !selecting -> L.common.open
+    selected -> L.files.explorerComponents.deselect
+    else -> L.files.explorerComponents.select
+}
+
+/** TalkBack: "Selected" / "Not selected" while selecting, "Cut" while the entry waits to be pasted. Semantics only. */
+private fun Modifier.entryStateSemantics(selecting: Boolean, selected: Boolean, cut: Boolean): Modifier =
+    if (!selecting && !cut) this else semantics {
+        if (selecting) this.selected = selected
+        if (cut) stateDescription = L.files.fileExplorer.cut
+    }
 
 // ---------------- list row ----------------
 
@@ -168,7 +188,13 @@ internal fun EntryRow(
             .padding(horizontal = 8.dp, vertical = 1.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(bg)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .combinedClickable(
+                onClickLabel = entryClickLabel(selecting, selected),
+                onLongClickLabel = if (selected) L.files.explorerComponents.deselect else L.files.explorerComponents.select,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .entryStateSemantics(selecting, selected, cut)
             .padding(start = 10.dp, end = 2.dp, top = 8.dp, bottom = 8.dp)
             .alpha(if (dimmed || cut) 0.45f else if (entry.hidden) 0.7f else 1f),
         verticalAlignment = Alignment.CenterVertically
@@ -197,7 +223,7 @@ internal fun EntryRow(
             Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { SelectionMark(selected) }
         } else {
             IconButton(onClick = onMore) {
-                Icon(Icons.Outlined.MoreVert, contentDescription = "More for ${entry.name}", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Outlined.MoreVert, contentDescription = L.files.explorerComponents.moreForName(entry.name), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -225,7 +251,13 @@ internal fun EntryTile(
             .fillMaxWidth()
             .padding(4.dp)
             .clip(RoundedCornerShape(18.dp))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .combinedClickable(
+                onClickLabel = entryClickLabel(selecting, selected),
+                onLongClickLabel = if (selected) L.files.explorerComponents.deselect else L.files.explorerComponents.select,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .entryStateSemantics(selecting, selected, cut)
             .alpha(if (dimmed || cut) 0.45f else if (entry.hidden) 0.7f else 1f)
     ) {
         Box(Modifier.fillMaxWidth()) {
@@ -269,9 +301,9 @@ internal fun crumbsFor(path: String, home: String): List<Crumb> {
     val clean = path.trimEnd('/').ifBlank { "/" }
     val storage = listOf("/storage/emulated/0", "/sdcard").firstOrNull { clean == it || clean.startsWith("$it/") }
     val (root, rootPath) = when {
-        home.isNotBlank() && (clean == home || clean.startsWith("$home/")) -> Crumb("Home", home, Icons.Outlined.Home) to home
-        storage != null -> Crumb("Internal storage", storage, Icons.Outlined.PhoneAndroid) to storage
-        else -> Crumb("Root", "/", Icons.Outlined.Storage) to "/"
+        home.isNotBlank() && (clean == home || clean.startsWith("$home/")) -> Crumb(L.common.home, home, Icons.Outlined.Home) to home
+        storage != null -> Crumb(L.files.explorerComponents.internalStorage, storage, Icons.Outlined.PhoneAndroid) to storage
+        else -> Crumb(L.common.root, "/", Icons.Outlined.Storage) to "/"
     }
     val rest = clean.removePrefix(rootPath).trim('/').split('/').filter { it.isNotBlank() }
     val crumbs = mutableListOf(root)
@@ -305,7 +337,7 @@ internal fun BreadcrumbBar(
             modifier = Modifier.size(36.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Outlined.SdStorage, contentDescription = "Places", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
+                Icon(Icons.Outlined.SdStorage, contentDescription = L.files.explorerComponents.places, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -328,7 +360,7 @@ internal fun BreadcrumbBar(
                         Modifier
                             .clip(RoundedCornerShape(9.dp))
                             .then(if (last) Modifier.background(MaterialTheme.colorScheme.surface) else Modifier)
-                            .combinedClickableCompat(onClick = { onCrumb(c) }, onLongClick = onCopyPath)
+                            .combinedClickableCompat(onClick = { onCrumb(c) }, onLongClick = onCopyPath, onLongClickLabel = L.files.explorerDialogs.copyPath)
                             .padding(horizontal = 8.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -358,9 +390,10 @@ internal fun BreadcrumbBar(
     }
 }
 
+// [onLongClickLabel]: what TalkBack calls the long press ("Copy path" instead of "long press")
 @OptIn(ExperimentalFoundationApi::class)
-internal fun Modifier.combinedClickableCompat(onClick: () -> Unit, onLongClick: () -> Unit): Modifier =
-    this.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+internal fun Modifier.combinedClickableCompat(onClick: () -> Unit, onLongClick: () -> Unit, onLongClickLabel: String? = null): Modifier =
+    this.combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = onLongClickLabel)
 
 // ---------------- small pieces ----------------
 

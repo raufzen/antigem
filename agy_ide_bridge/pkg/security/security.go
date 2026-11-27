@@ -65,9 +65,12 @@ func ResolveToken(cliToken string) string {
 	cliToken = strings.TrimSpace(cliToken)
 	tokenFile := getTokenFilePath()
 
+	// the folder holds the token: only the owner may list or enter it (also fixes one made 0755 by older versions)
+	_ = os.MkdirAll(filepath.Dir(tokenFile), 0700)
+	_ = os.Chmod(filepath.Dir(tokenFile), 0700)
+
 	if len(cliToken) == TokenLen {
-		_ = os.MkdirAll(filepath.Dir(tokenFile), 0755)
-		_ = os.WriteFile(tokenFile, []byte(cliToken), 0600)
+		writeTokenFile(tokenFile, cliToken)
 		return cliToken
 	}
 
@@ -81,9 +84,22 @@ func ResolveToken(cliToken string) string {
 
 	// Generate and persist new token
 	newToken := GenerateToken()
-	_ = os.MkdirAll(filepath.Dir(tokenFile), 0755)
-	_ = os.WriteFile(tokenFile, []byte(newToken), 0600)
+	writeTokenFile(tokenFile, newToken)
 	return newToken
+}
+
+// writeTokenFile saves the token 0600. os.WriteFile keeps the mode of a file that already exists, so chmod after.
+func writeTokenFile(path, token string) {
+	_ = os.WriteFile(path, []byte(token), 0600)
+	_ = os.Chmod(path, 0600)
+}
+
+// MaskSecret shows only the start of a secret ("abcd…"), for logs other people may read.
+func MaskSecret(s string) string {
+	if len(s) <= 4 {
+		return "…"
+	}
+	return s[:4] + "…"
 }
 
 // PatchAgyHeader rotates the CSRF header in the target binary in-place to the 20-byte framed header.
@@ -323,9 +339,10 @@ func AuthMiddleware(token string, next http.Handler) http.Handler {
 	rawHeaderName := BuildFramedHeader(token)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow health/ping endpoints without auth
+		// Allow health/ping endpoints without auth: exact paths only, and never a WebSocket upgrade (a WebSocket on an
+		// exempt path would skip the token)
 		path := r.URL.Path
-		if path == "/api/health" || path == "/health" || path == "/ping" {
+		if (path == "/api/health" || path == "/health" || path == "/ping") && r.Header.Get("Upgrade") == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -414,12 +431,17 @@ func (l *failureLimiter) fail(ip string) {
 }
 
 // clientIP is the caller's address; behind a reverse proxy on this machine it is the forwarded one.
+// TrustProxyHeaders: X-Forwarded-For from loopback names the real client (a reverse proxy on a server). Off with
+// --no-proxy-headers (the phone): there every app reaches the bridge on loopback and could change the header on each
+// try to get around the failure limit.
+var TrustProxyHeaders = true
+
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+	if ip := net.ParseIP(host); TrustProxyHeaders && ip != nil && ip.IsLoopback() {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			if i := strings.Index(xff, ","); i >= 0 {
 				xff = xff[:i]

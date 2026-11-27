@@ -56,6 +56,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,6 +79,7 @@ import ai.antigem.theme.isSystemInDarkThemeRobust
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import ai.antigem.i18n.L
 
 /**
  * "Get apps": the mini apps published in AntiGem's mini app repository (a GitHub repo with signed packages and a
@@ -119,7 +126,7 @@ private fun StoreScreen(catalogUrl: String, onBack: () -> Unit) {
         loading = true
         runCatching { MiniAppStore.load(catalogUrl) }
             .onSuccess { catalog = it; error = null }
-            .onFailure { error = it.message ?: "Couldn't load the catalog" }
+            .onFailure { error = it.message ?: L.miniapps.miniAppStoreActivity.couldntLoadTheCatalog }
         withContext(Dispatchers.IO) { MiniApps.scan(context) }
         loading = false
         tick++
@@ -137,16 +144,16 @@ private fun StoreScreen(catalogUrl: String, onBack: () -> Unit) {
             TopAppBar(
                 title = {
                     Column {
-                        Text("Get mini apps")
+                        Text(L.miniapps.miniAppStoreActivity.getMiniApps, modifier = Modifier.semantics { heading() })
                         Text(catalog?.name ?: MiniAppStore.REPO, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, L.common.back) } },
                 actions = {
                     IconButton(onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(MiniAppStore.PAGE))) } }) {
-                        Icon(Icons.AutoMirrored.Outlined.OpenInNew, "Open the repository")
+                        Icon(Icons.AutoMirrored.Outlined.OpenInNew, L.miniapps.miniAppStoreActivity.openTheRepository)
                     }
-                    IconButton(enabled = !loading, onClick = { load() }) { Icon(Icons.Outlined.Refresh, "Refresh") }
+                    IconButton(enabled = !loading, onClick = { load() }) { Icon(Icons.Outlined.Refresh, L.common.refresh) }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
@@ -155,26 +162,26 @@ private fun StoreScreen(catalogUrl: String, onBack: () -> Unit) {
     ) { pad ->
         val c = catalog
         when {
-            c == null && loading -> Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            c == null && loading -> Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.semantics { contentDescription = L.common.loading }) }
             c == null -> Column(
                 Modifier.fillMaxSize().padding(pad).padding(32.dp),
                 verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Icon(Icons.Outlined.CloudOff, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Couldn't load the apps", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
+                Text(L.miniapps.miniAppStoreActivity.couldntLoadTheApps, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp).semantics { liveRegion = LiveRegionMode.Polite })
                 Text(error.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
-                Button(onClick = { load() }, modifier = Modifier.padding(top = 16.dp)) { Text("Try again") }
+                Button(onClick = { load() }, modifier = Modifier.padding(top = 16.dp)) { Text(L.common.tryAgain) }
             }
             c.apps.isEmpty() -> Box(Modifier.fillMaxSize().padding(pad).padding(32.dp), contentAlignment = Alignment.Center) {
-                Text("No apps in this catalog yet", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(L.miniapps.miniAppStoreActivity.noAppsInThisCatalogYet, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             else -> LazyColumn(
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = pad.calculateTopPadding() + 4.dp, bottom = pad.calculateBottomPadding() + 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                if (error != null) item { Text(error.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(4.dp)) }
+                if (error != null) item { Text(error.orEmpty(), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(4.dp).semantics { liveRegion = LiveRegionMode.Polite }) }
                 items(c.apps, key = { it.id }) { e ->
                     val (state, detail) = remember(e, tick) { MiniAppStore.state(context, e) }
                     StoreCard(e, state, detail,
@@ -189,7 +196,7 @@ private fun StoreScreen(catalogUrl: String, onBack: () -> Unit) {
     replace?.let { (e, folder) ->
         AlertDialog(
             onDismissRequest = { replace = null },
-            title = { Text("Replace the development copy?") },
+            title = { Text(L.miniapps.miniAppStoreActivity.replaceTheDevelopmentCopy) },
             text = {
                 Text("~/mini-apps/$folder has the same id (${e.id}), so the published ${e.name} can't be installed next to it. " +
                     "Delete that folder and its data, then install the published app?")
@@ -202,9 +209,9 @@ private fun StoreScreen(catalogUrl: String, onBack: () -> Unit) {
                         tick++
                         installing = InstallSource.FromStore(e)
                     }
-                }) { Text("Delete and install", color = MaterialTheme.colorScheme.error) }
+                }) { Text(L.miniapps.miniAppStoreActivity.deleteAndInstall, color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { replace = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { replace = null }) { Text(L.common.cancel) } },
         )
     }
 }
@@ -216,32 +223,33 @@ private fun StoreCard(e: MiniAppStore.Entry, state: MiniAppStore.State, detail: 
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+                // the icon (or its letter) is decoration: the name is read next to it
+                Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.primaryContainer).clearAndSetSemantics { }, contentAlignment = Alignment.Center) {
                     Text(e.name.take(1).uppercase(), style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     if (e.iconUrl != null) AsyncImage(model = e.iconUrl, contentDescription = null, modifier = Modifier.size(56.dp))
                 }
                 Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                    Text(e.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(e.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
                     Text("${e.developer} · ${e.version} · ${Formatter.formatShortFileSize(context, e.size)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Box(Modifier.padding(start = 8.dp)) {
                     when (state) {
-                        MiniAppStore.State.INSTALL -> FilledTonalButton(onClick = onInstall) { Text("Install") }
-                        MiniAppStore.State.UPDATE -> Button(onClick = onInstall) { Text("Update") }
-                        MiniAppStore.State.OPEN -> OutlinedButton(onClick = onOpen) { Text("Open") }
-                        MiniAppStore.State.DEV_COPY -> OutlinedButton(onClick = onReplace) { Text("Replace") }
+                        MiniAppStore.State.INSTALL -> FilledTonalButton(onClick = onInstall) { Text(L.common.install) }
+                        MiniAppStore.State.UPDATE -> Button(onClick = onInstall) { Text(L.common.update) }
+                        MiniAppStore.State.OPEN -> OutlinedButton(onClick = onOpen) { Text(L.common.open) }
+                        MiniAppStore.State.DEV_COPY -> OutlinedButton(onClick = onReplace) { Text(L.common.replace) }
                         MiniAppStore.State.OTHER_DEVELOPER -> {}
                     }
                 }
             }
             if (e.description.isNotBlank()) Text(e.description, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 10.dp))
-            if (perms.isNotEmpty()) Text("Asks for: " + perms.joinToString(", "), style = MaterialTheme.typography.labelSmall,
+            if (perms.isNotEmpty()) Text(L.miniapps.miniAppStoreActivity.asksForValue(perms.joinToString(", ")), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
             val note = when (state) {
                 MiniAppStore.State.UPDATE -> "Installed: $detail → ${e.version}"
-                MiniAppStore.State.OPEN -> "Installed"
-                MiniAppStore.State.DEV_COPY -> "A development copy is in ~/mini-apps/$detail"
+                MiniAppStore.State.OPEN -> L.common.installed
+                MiniAppStore.State.DEV_COPY -> L.miniapps.miniAppStoreActivity.aDevelopmentCopyIsInMini(detail)
                 MiniAppStore.State.OTHER_DEVELOPER -> "Installed from another developer ($detail): uninstall it to get this one"
                 MiniAppStore.State.INSTALL -> null
             }

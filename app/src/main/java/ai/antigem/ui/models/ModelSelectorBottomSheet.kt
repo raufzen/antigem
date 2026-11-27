@@ -8,7 +8,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -53,6 +54,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -75,6 +79,7 @@ import ai.antigem.ui.components.AgyAccent
 import ai.antigem.ui.components.ClaudeAccent
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import ai.antigem.i18n.L
 
 /**
  * Antigravity's model picker, laid out like Claude Code's and OpenCode's: one section per quota group with its
@@ -112,8 +117,9 @@ fun ModelSelectorBottomSheet(
     }
     // the status bar's height, read once: it does not change while the sheet moves
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    // opens at half height like the Claude Code picker; swipe up (or scroll the list) for the full list
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
+    // opens at half height like the Claude Code picker; swipe up (or scroll the list) for the full list.
+    // Full height while TalkBack is on (a half-open sheet needs a two-finger drag there).
+    val sheetState = ai.antigem.ui.components.rememberSheetStateFullUnderTalkBack()
     val scope = rememberCoroutineScope()
 
     ModalBottomSheet(
@@ -142,8 +148,8 @@ fun ModelSelectorBottomSheet(
         ) {
             AgentSheetHeader(
                 AgentKind.AGY,
-                title = "Select model",
-                detail = if (availableModels.isNotEmpty()) "${availableModels.size} models" else "no models loaded",
+                title = L.common.selectModel,
+                detail = if (availableModels.isNotEmpty()) "${availableModels.size} models" else L.models.modelSelectorBottom.noModelsLoaded,
                 refreshing = isRefreshing,
                 onRefresh = onRefresh,
                 actions = if (groups.size > 1) ({ EditGroupsAction(editing, AgyAccent) { editing = !editing } }) else null
@@ -166,7 +172,7 @@ fun ModelSelectorBottomSheet(
                         val accent = section.group?.let(::agyGroupColor) ?: AgyAccent
                         item(key = "h_${section.group?.id ?: "_none"}") {
                             QuotaGroupHeader(
-                                title = section.group?.title ?: "Models",
+                                title = section.group?.title ?: L.common.models,
                                 accent = accent,
                                 count = section.families.size,
                                 windows = section.group?.headerWindows.orEmpty(),
@@ -224,10 +230,10 @@ private fun NoModelsCard() {
         modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
     ) {
         Column(Modifier.padding(18.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("No models loaded", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text(L.models.modelSelectorBottom.noModelsLoaded2, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             Spacer(Modifier.height(2.dp))
             Text(
-                "Connect your Google account in Settings or tap refresh to load your models.",
+                L.models.modelSelectorBottom.connectYourGoogleAccountInSettings,
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
@@ -260,7 +266,8 @@ private fun AgyModelCard(
         shape = RoundedCornerShape(14.dp),
         color = ai.antigem.theme.AppColors.card,
         border = BorderStroke(if (isActive) 1.5.dp else 1.dp, borderColor),
-        modifier = modifier.fillMaxWidth()
+        // TalkBack: "Selected" / "Not selected"
+        modifier = modifier.fillMaxWidth().semantics { this.selected = isActive }
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -327,7 +334,7 @@ private fun TierSelector(
                 .graphicsLayer { alpha = highlight }
                 .clip(RoundedCornerShape(8.dp)).background(accent)
         )
-        Row(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxSize().selectableGroup()) {
             variants.forEachIndexed { i, v ->
                 val on = i == selIdx
                 val content by animateColorAsState(
@@ -335,8 +342,9 @@ private fun TierSelector(
                     label = "tier_text"
                 )
                 Box(
+                    // selectable: TalkBack says which tier is chosen (same tap and ripple as clickable)
                     Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(8.dp))
-                        .clickable(enabled = enabled) { onSelect(v.model.id) },
+                        .selectable(selected = on, enabled = enabled, role = Role.RadioButton) { onSelect(v.model.id) },
                     contentAlignment = Alignment.Center
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -346,7 +354,13 @@ private fun TierSelector(
                             Spacer(Modifier.width(6.dp))
                         }
                         Text(
-                            v.tierLabel.ifBlank { v.model.displayName },
+                            // tierLabel stays English (tierRank reads it); only the shown name is translated
+                            when (level) {
+                                1 -> L.models.modelSelectorBottom.low
+                                2 -> L.models.modelSelectorBottom.medium
+                                3 -> L.models.modelSelectorBottom.high
+                                else -> v.tierLabel.ifBlank { v.model.displayName }
+                            },
                             fontSize = 12.sp,
                             fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium,
                             color = content,
@@ -440,17 +454,17 @@ fun formatCleanCountdown(isoString: String?, rawCountdown: String? = null): Stri
             val target = sdf.parse(clean)?.time
             if (target != null) {
                 val diffMs = target - System.currentTimeMillis()
-                if (diffMs <= 0) return "Ready"
+                if (diffMs <= 0) return L.common.ready
                 val totalMins = diffMs / (1000 * 60)
                 val days = totalMins / (60 * 24)
                 val hours = (totalMins % (60 * 24)) / 60
                 val mins = totalMins % 60
                 return when {
-                    days > 0 && hours > 0 -> "${days}d ${hours}h"
-                    days > 0 -> "${days}d"
-                    hours > 0 && mins > 0 -> "${hours}h ${mins}m"
-                    hours > 0 -> "${hours}h"
-                    else -> "${mins}m"
+                    days > 0 && hours > 0 -> L.models.modelSelectorBottom.daysDHoursH(days, hours)
+                    days > 0 -> L.models.modelSelectorBottom.daysD(days)
+                    hours > 0 && mins > 0 -> L.models.modelSelectorBottom.hoursHMinsM(hours, mins)
+                    hours > 0 -> L.models.modelSelectorBottom.hoursH(hours)
+                    else -> L.models.modelSelectorBottom.minsM(mins)
                 }
             }
         } catch (_: Exception) {}

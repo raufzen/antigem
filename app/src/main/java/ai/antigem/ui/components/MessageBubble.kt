@@ -33,6 +33,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.graphicsLayer
@@ -58,6 +66,7 @@ import androidx.compose.material.icons.rounded.HeadsetMic
 import kotlinx.coroutines.delay
 import java.text.NumberFormat
 import java.util.Locale
+import ai.antigem.i18n.L
 
 @Composable
 fun MessageBubble(
@@ -145,7 +154,26 @@ fun MessageBubble(
                         .widthIn(max = 320.dp)
                         .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .clickable { showUserActions = !showUserActions }
+                        // TalkBack: the actions under the bubble are also in its actions menu (no need to open the row).
+                        // A heading: TalkBack's heading navigation jumps prompt to prompt in a long chat (the reply follows each)
+                        .semantics {
+                            heading()
+                            customActions = buildList {
+                                add(CustomAccessibilityAction(L.common.copy) {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Copied Prompt", message.content))
+                                    Toast.makeText(context, L.components.messageBubble.copiedPrompt, Toast.LENGTH_SHORT).show()
+                                    true
+                                })
+                                add(CustomAccessibilityAction(L.components.messageBubble.editPrompt) { onEdit(message); true })
+                                add(CustomAccessibilityAction(L.components.messageBubble.retryPrompt) { onRetry(message); true })
+                                val payload = message.rawContent ?: message.rawPayload
+                                if (!payload.isNullOrBlank()) {
+                                    add(CustomAccessibilityAction(L.components.messageBubble.viewRawRequestPayload) { onViewRawPayload?.invoke(payload); true })
+                                }
+                            }
+                        }
+                        .clickable(onClickLabel = if (showUserActions) L.components.a11y.hideMessageActions else L.components.a11y.showMessageActions) { showUserActions = !showUserActions }
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
                     SelectionContainer {
@@ -175,14 +203,14 @@ fun MessageBubble(
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 val clip = ClipData.newPlainText("Copied Prompt", message.content)
                                 clipboard.setPrimaryClip(clip)
-                                Toast.makeText(context, "Copied prompt", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, L.components.messageBubble.copiedPrompt, Toast.LENGTH_SHORT).show()
                                 showUserActions = false
                             },
                             modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.ContentCopy,
-                                contentDescription = "Copy",
+                                contentDescription = L.common.copy,
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                 modifier = Modifier.size(15.dp)
                             )
@@ -200,7 +228,7 @@ fun MessageBubble(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Edit,
-                                contentDescription = "Edit prompt",
+                                contentDescription = L.components.messageBubble.editPrompt,
                                 tint = ClaudeTerracotta,
                                 modifier = Modifier.size(15.dp)
                             )
@@ -218,7 +246,7 @@ fun MessageBubble(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Refresh,
-                                contentDescription = "Retry prompt",
+                                contentDescription = L.components.messageBubble.retryPrompt,
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                 modifier = Modifier.size(16.dp)
                             )
@@ -236,7 +264,7 @@ fun MessageBubble(
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.DataObject,
-                                    contentDescription = "View Raw Request Payload",
+                                    contentDescription = L.components.messageBubble.viewRawRequestPayload,
                                     tint = ai.antigem.theme.AppColors.accentTeal,
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -294,13 +322,13 @@ fun MessageBubble(
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     val clip = ClipData.newPlainText("Copied Response", MemoryBlocks.strip(message.content))
                                     clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(context, "Copied response", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, L.components.messageBubble.copiedResponse, Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.size(28.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.ContentCopy,
-                                    contentDescription = "Copy message",
+                                    contentDescription = L.components.messageBubble.copyMessage,
                                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                                     modifier = Modifier.size(15.dp)
                                 )
@@ -314,7 +342,7 @@ fun MessageBubble(
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Refresh,
-                                    contentDescription = "Regenerate response",
+                                    contentDescription = L.components.messageBubble.regenerateResponse,
                                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                                     modifier = Modifier.size(16.dp)
                                 )
@@ -329,7 +357,7 @@ fun MessageBubble(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Outlined.DataObject,
-                                        contentDescription = "View Raw Request Payload",
+                                        contentDescription = L.components.messageBubble.viewRawRequestPayload,
                                         tint = ai.antigem.theme.AppColors.accentTeal,
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -344,7 +372,7 @@ fun MessageBubble(
                                 ) {
                                     Icon(
                                         imageVector = Icons.Outlined.Layers,
-                                        contentDescription = "View Artifacts ($artifactsCount)",
+                                        contentDescription = L.components.a11y.viewArtifacts(artifactsCount),
                                         tint = ClaudeTerracotta,
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -386,7 +414,7 @@ fun UserMessageBubble(
     if (previewImageUrl != null) {
         FullScreenImageDialog(
             imageUrl = previewImageUrl!!,
-            title = "Image Preview",
+            title = L.components.messageBubble.imagePreview,
             onDismiss = { previewImageUrl = null }
         )
     }
@@ -418,7 +446,29 @@ fun UserMessageBubble(
                 .bringIntoViewRequester(bubbleBringIntoView)
                 .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable { showUserActions = !showUserActions }
+                // TalkBack: the actions under the bubble are also in its actions menu (no need to open the row).
+                // A heading: TalkBack's heading navigation jumps prompt to prompt in a long chat (the reply follows each)
+                .semantics {
+                    heading()
+                    customActions = buildList {
+                        add(CustomAccessibilityAction(L.common.copy) {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Copied Prompt", message.content))
+                            Toast.makeText(context, L.components.messageBubble.copiedPrompt, Toast.LENGTH_SHORT).show()
+                            true
+                        })
+                        add(CustomAccessibilityAction(L.components.messageBubble.viewFullPrompt) { showFullPrompt = true; true })
+                        if (canEdit) add(CustomAccessibilityAction(L.components.messageBubble.undoAndEditPrompt) { onEdit(message); true })
+                        if (checkpoint != null && onRestoreCheckpoint != null) {
+                            add(CustomAccessibilityAction(L.components.messageBubble.restoreToBeforeThisMessage) { onRestoreCheckpoint(message); true })
+                        }
+                        val payload = message.rawContent ?: message.rawPayload
+                        if (isDevModeEnabled && !payload.isNullOrBlank()) {
+                            add(CustomAccessibilityAction(L.components.messageBubble.viewRawRequestPayload) { onViewRawPayload?.invoke(payload); true })
+                        }
+                    }
+                }
+                .clickable(onClickLabel = if (showUserActions) L.components.a11y.hideMessageActions else L.components.a11y.showMessageActions) { showUserActions = !showUserActions }
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -466,7 +516,7 @@ fun UserMessageBubble(
                             modifier = Modifier.size(13.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Voice", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = GeminiBlue)
+                        Text(L.common.voice, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = GeminiBlue)
                     }
                 }
 
@@ -512,18 +562,23 @@ fun UserMessageBubble(
                             Row(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .clickable {
+                                    // TalkBack: "Expanded" / "Collapsed"
+                                    .semantics { stateDescription = if (isTextExpanded) L.components.a11y.expanded else L.components.a11y.collapsed }
+                                    .clickable(role = Role.Button) {
                                         if (isTextExpanded) collapseRequests++
                                         isTextExpanded = !isTextExpanded
                                     }
                                     .padding(vertical = 2.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                val toggleText = if (isTextExpanded) L.components.messageBubble.showLess else L.components.messageBubble.showMoreLinecountLines(lineCount)
                                 Text(
-                                    text = if (isTextExpanded) "Show less ▲" else "Show more (${lineCount} lines) ▼",
+                                    text = toggleText,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = ClaudeTerracotta
+                                    color = ClaudeTerracotta,
+                                    // read without the ▲ / ▼ ("black down-pointing triangle")
+                                    modifier = Modifier.clearAndSetSemantics { contentDescription = toggleText.replace("▲", "").replace("▼", "").trim() }
                                 )
                             }
                         }
@@ -548,7 +603,7 @@ fun UserMessageBubble(
                 modifier = Modifier
                     .padding(top = 5.dp, end = 2.dp)
                     .clip(RoundedCornerShape(50))
-                    .clickable { onRestoreCheckpoint(message) }
+                    .clickable(role = Role.Button) { onRestoreCheckpoint(message) }
                     .padding(horizontal = 8.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -560,7 +615,7 @@ fun UserMessageBubble(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "Restore point",
+                    text = L.components.messageBubble.restorePoint,
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
@@ -584,14 +639,14 @@ fun UserMessageBubble(
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val clip = ClipData.newPlainText("Copied Prompt", message.content)
                         clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "Copied prompt", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L.components.messageBubble.copiedPrompt, Toast.LENGTH_SHORT).show()
                         showUserActions = false
                     },
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.ContentCopy,
-                        contentDescription = "Copy",
+                        contentDescription = L.common.copy,
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         modifier = Modifier.size(15.dp)
                     )
@@ -608,7 +663,7 @@ fun UserMessageBubble(
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Visibility,
-                        contentDescription = "View full prompt",
+                        contentDescription = L.components.messageBubble.viewFullPrompt,
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         modifier = Modifier.size(16.dp)
                     )
@@ -625,7 +680,7 @@ fun UserMessageBubble(
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Edit,
-                        contentDescription = "Undo and edit prompt",
+                        contentDescription = L.components.messageBubble.undoAndEditPrompt,
                         tint = ClaudeTerracotta,
                         modifier = Modifier.size(15.dp)
                     )
@@ -643,7 +698,7 @@ fun UserMessageBubble(
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.History,
-                            contentDescription = "Restore to before this message",
+                            contentDescription = L.components.messageBubble.restoreToBeforeThisMessage,
                             tint = ai.antigem.theme.AppColors.info,
                             modifier = Modifier.size(16.dp)
                         )
@@ -662,7 +717,7 @@ fun UserMessageBubble(
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.DataObject,
-                            contentDescription = "View Raw Request Payload",
+                            contentDescription = L.components.messageBubble.viewRawRequestPayload,
                             tint = ai.antigem.theme.AppColors.accentTeal,
                             modifier = Modifier.size(16.dp)
                         )
@@ -715,13 +770,13 @@ fun AssistantMessageFooter(
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText("Copied Response", MemoryBlocks.strip(message.content))
                     clipboard.setPrimaryClip(clip)
-                    Toast.makeText(context, "Copied response", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, L.components.messageBubble.copiedResponse, Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.size(28.dp)
             ) {
                 Icon(
                     imageVector = Icons.Outlined.ContentCopy,
-                    contentDescription = "Copy message",
+                    contentDescription = L.components.messageBubble.copyMessage,
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                     modifier = Modifier.size(15.dp)
                 )
@@ -737,7 +792,7 @@ fun AssistantMessageFooter(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.SelectAll,
-                    contentDescription = "Select text",
+                    contentDescription = L.components.messageBubble.selectText,
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                     modifier = Modifier.size(16.dp)
                 )
@@ -756,7 +811,7 @@ fun AssistantMessageFooter(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Refresh,
-                    contentDescription = "Regenerate response",
+                    contentDescription = L.components.messageBubble.regenerateResponse,
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
                     modifier = Modifier.size(16.dp)
                 )
@@ -764,10 +819,10 @@ fun AssistantMessageFooter(
             if (confirmRetry) {
                 AlertDialog(
                     onDismissRequest = { confirmRetry = false },
-                    title = { Text("Regenerate response?", fontWeight = FontWeight.Bold) },
+                    title = { Text(L.components.messageBubble.regenerateResponse2, fontWeight = FontWeight.Bold) },
                     text = {
                         Text(
-                            "The same message is sent again and this reply is replaced by a new one.",
+                            L.components.messageBubble.theSameMessageIsSentAgain,
                             fontSize = 14.sp
                         )
                     },
@@ -775,9 +830,9 @@ fun AssistantMessageFooter(
                         TextButton(onClick = {
                             confirmRetry = false
                             onRetry(message)
-                        }) { Text("Regenerate", color = ClaudeTerracotta, fontWeight = FontWeight.Bold) }
+                        }) { Text(L.components.messageBubble.regenerate, color = ClaudeTerracotta, fontWeight = FontWeight.Bold) }
                     },
-                    dismissButton = { TextButton(onClick = { confirmRetry = false }) { Text("Cancel") } }
+                    dismissButton = { TextButton(onClick = { confirmRetry = false }) { Text(L.common.cancel) } }
                 )
             }
 
@@ -790,7 +845,7 @@ fun AssistantMessageFooter(
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.DataObject,
-                        contentDescription = "View Raw Request Payload",
+                        contentDescription = L.components.messageBubble.viewRawRequestPayload,
                         tint = ai.antigem.theme.AppColors.accentTeal,
                         modifier = Modifier.size(16.dp)
                     )
@@ -805,7 +860,7 @@ fun AssistantMessageFooter(
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Layers,
-                        contentDescription = "View Artifacts ($artifactsCount)",
+                        contentDescription = L.components.a11y.viewArtifacts(artifactsCount),
                         tint = ClaudeTerracotta,
                         modifier = Modifier.size(16.dp)
                     )
@@ -815,16 +870,16 @@ fun AssistantMessageFooter(
     }
 }
 
-private val WAITING_PHRASES = listOf(
-    "Consulting AGY",
-    "Cooking response",
-    "Crafting answer",
-    "Gathering context",
-    "Working on it",
-    "Synthesizing",
-    "Connecting dots",
-    "Analyzing request",
-    "Formulating response"
+private val WAITING_PHRASES get() = listOf(
+    L.components.messageBubble.consultingAgy,
+    L.components.messageBubble.cookingResponse,
+    L.components.messageBubble.craftingAnswer,
+    L.components.messageBubble.gatheringContext,
+    L.components.messageBubble.workingOnIt,
+    L.components.messageBubble.synthesizing,
+    L.components.messageBubble.connectingDots,
+    L.components.messageBubble.analyzingRequest,
+    L.components.messageBubble.formulatingResponse
 )
 
 @Composable
@@ -875,7 +930,9 @@ private fun WaitingDotsText(phrase: String) {
         fontSize = 12.5.sp,
         fontWeight = FontWeight.SemiBold,
         color = ClaudeTerracotta,
-        letterSpacing = 0.2.sp
+        letterSpacing = 0.2.sp,
+        // the dots change every half second: TalkBack gets the phrase only
+        modifier = Modifier.clearAndSetSemantics { contentDescription = phrase }
     )
 }
 
@@ -885,7 +942,7 @@ fun formatDuration(durationMs: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return when {
-        minutes > 0 && seconds > 0 -> "${minutes}m ${seconds}s"
+        minutes > 0 && seconds > 0 -> L.components.messageBubble.minutesMSecondsS(minutes, seconds)
         minutes > 0 -> "${minutes}m"
         durationMs < 1000 -> "${durationMs}ms"
         totalSeconds < 10 -> String.format(Locale.US, "%.1fs", durationMs / 1000f)
@@ -923,11 +980,22 @@ fun TokenUsageTelemetryPill(
         border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.12f else 0.18f)),
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
-            .clickable { showDetails = true }
+            .clickable(onClickLabel = L.common.details, role = Role.Button) { showDetails = true }
     ) {
         // one line, always: the model name gives way (…) before anything wraps
         Row(
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+            modifier = Modifier
+                .padding(horizontal = 7.dp, vertical = 3.dp)
+                // TalkBack: exact counts in words, not "inbox tray 12k, outbox tray 3k, high voltage…"
+                .clearAndSetSemantics {
+                    contentDescription = buildList {
+                        add(L.components.a11y.tokenUsage(usage.promptTokens, usage.outputTokens))
+                        if (usage.cachedTokens > 0) add("${L.components.tokenUsageDetails.cacheRead} ${usage.cachedTokens} ($cachePct%)")
+                        if (usage.durationMs > 0) add("${L.components.tokenUsageDetails.time} ${formatDuration(usage.durationMs)}")
+                        usage.model?.takeIf { it.isNotBlank() }?.let { add("${L.components.tokenUsageDetails.model} ${shortModelName(it)}") }
+                        if (usage.isEstimated) add(L.components.tokenUsageDetails.tokenCountsAreEstimates)
+                    }.joinToString(", ")
+                },
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -1010,7 +1078,12 @@ fun ContextSummaryCheckpointBanner(
             .fillMaxWidth()
             .padding(bottom = 8.dp)
             .clip(RoundedCornerShape(12.dp))
-            .clickable { expanded = !expanded },
+            // TalkBack: "Expanded" / "Collapsed"
+            .semantics { stateDescription = if (expanded) L.components.a11y.expanded else L.components.a11y.collapsed }
+            .clickable(
+                role = Role.Button,
+                onClickLabel = if (expanded) L.common.hide else L.common.show
+            ) { expanded = !expanded },
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
         border = BorderStroke(1.dp, ClaudeTerracotta.copy(alpha = 0.35f))
@@ -1021,17 +1094,24 @@ fun ContextSummaryCheckpointBanner(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "🧠 Context Compacted (History Summarized)",
+                    text = L.components.messageBubble.contextCompactedHistorySummarized,
                     fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = ClaudeTerracotta,
-                    modifier = Modifier.weight(1f)
+                    // read without the 🧠 ("brain")
+                    modifier = Modifier.weight(1f).clearAndSetSemantics {
+                        contentDescription = L.components.messageBubble.contextCompactedHistorySummarized.replace("🧠", "").trim()
+                    }
                 )
                 Text(
-                    text = if (expanded) "Hide ▲" else "Show Details ▼",
+                    text = if (expanded) "Hide ▲" else L.components.messageBubble.showDetails,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    // read without the ▲ / ▼
+                    modifier = Modifier.clearAndSetSemantics {
+                        contentDescription = if (expanded) L.common.hide else L.components.messageBubble.showDetails.replace("▼", "").trim()
+                    }
                 )
             }
 
@@ -1091,9 +1171,9 @@ private fun UserMessageImageItem(
     // a bridge file needs the authenticated fetch above; Coil alone would be refused
     val finalUri = resolvedUri.ifBlank { if (HubMediaResolver.isBridgeFileUrl(rawUri)) "" else rawUri }
     val coilData: Any? = remember(finalUri, attachment.base64, memKey) {
-        val cachedBytes = HubMediaResolver.getImageBytes(memKey)
+        val cachedFile = HubMediaResolver.cachedFile(memKey)
         when {
-            cachedBytes != null -> cachedBytes
+            cachedFile != null -> cachedFile
             finalUri.startsWith("data:image/") -> {
                 try {
                     val b64 = finalUri.substringAfter("base64,")
@@ -1118,7 +1198,7 @@ private fun UserMessageImageItem(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .clickable {
+            .clickable(role = Role.Button, onClickLabel = L.components.a11y.viewImage) {
                 when {
                     finalUri.isNotBlank() -> onImageClick(finalUri)
                     // image kept only as data (e.g. a reopened Claude chat)
@@ -1231,7 +1311,7 @@ private fun UserMessageDocumentItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .clickable {
+            .clickable(role = Role.Button, onClickLabel = L.components.messageBubble.openName(attachment.name)) {
                 if (attachment.reference && attachment.path.isNotBlank()) {
                     // a file on the agent's machine (sent by path): opened like any file link (encoded, the handler decodes)
                     fileLinkHandler.onOpenFile(java.net.URLEncoder.encode(attachment.path, "UTF-8"))
@@ -1243,7 +1323,7 @@ private fun UserMessageDocumentItem(
                     scope.launch {
                         val file = HubMediaResolver.downloadBridgeFile(context, bridgeUrl, attachment.name)
                         if (file == null) {
-                            Toast.makeText(context, "${attachment.name} is no longer available", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, L.components.messageBubble.nameIsNoLongerAvailable(attachment.name), Toast.LENGTH_SHORT).show()
                         } else if (isText) {
                             fileLinkHandler.onOpenFile(file.absolutePath)
                         } else {
@@ -1253,9 +1333,9 @@ private fun UserMessageDocumentItem(
                                     setDataAndType(uri, attachment.mimeType ?: "*/*")
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 }
-                                context.startActivity(Intent.createChooser(intent, "Open ${attachment.name}"))
+                                context.startActivity(Intent.createChooser(intent, L.components.messageBubble.openName(attachment.name)))
                             } catch (e: Exception) {
-                                Toast.makeText(context, "Cannot open: ${e.message}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, L.components.messageBubble.cannotOpenMessage(e.message), Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
@@ -1287,12 +1367,12 @@ private fun UserMessageDocumentItem(
                                 setDataAndType(uri, attachment.mimeType ?: "*/*")
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             }
-                            context.startActivity(Intent.createChooser(intent, "Open ${attachment.name}"))
+                            context.startActivity(Intent.createChooser(intent, L.components.messageBubble.openName(attachment.name)))
                         } else {
                             Toast.makeText(context, attachment.name, Toast.LENGTH_SHORT).show()
                         }
                     } catch (e: Exception) {
-                        Toast.makeText(context, "Cannot open: ${e.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L.components.messageBubble.cannotOpenMessage(e.message), Toast.LENGTH_SHORT).show()
                     }
                 }
             }

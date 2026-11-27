@@ -36,6 +36,7 @@ import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
+import ai.antigem.i18n.L
 
 /**
  * Settings → REA → Websites: lets REA's website tools (list_browser_targets, inspect_web_page, capture_web_screenshot…)
@@ -79,6 +80,11 @@ object ReaWebBridge {
     val state: StateFlow<State> = _state.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** The bridge stops itself after this long without a request (and no open connection). */
+    private const val IDLE_STOP_MS = 10 * 60_000L
+    @Volatile private var lastUse = 0L
+    private var idleWatch: kotlinx.coroutines.Job? = null
     private var server: ServerSocket? = null
     private val open = Collections.newSetFromMap(ConcurrentHashMap<java.io.Closeable, Boolean>())
     private lateinit var appContext: Context
@@ -94,9 +100,24 @@ object ReaWebBridge {
             return
         }
         server = socket
+        ai.antigem.data.security.LocalPorts.add(socket.localPort)
         // DevTools must be on for the WebView to serve its socket (the browser turns it on too)
-        scope.launch(Dispatchers.Main) { runCatching { android.webkit.WebView.setWebContentsDebuggingEnabled(true) } }
+        ai.antigem.ui.browser.WebDebug.hold("rea")
         _state.update { State(running = true, port = port) }
+        // no secret on this port (REA's client may drop a path): it stops itself when nobody used it for a while
+        lastUse = android.os.SystemClock.elapsedRealtime()
+        idleWatch?.cancel()
+        idleWatch = scope.launch {
+            while (server === socket) {
+                kotlinx.coroutines.delay(60_000)
+                val idle = android.os.SystemClock.elapsedRealtime() - lastUse
+                if (server === socket && _state.value.connections == 0 && idle >= IDLE_STOP_MS) {
+                    stop()
+                    _state.update { it.copy(error = L.rea.webBridge.stoppedAfterMinutesMinutesWithoutUse(IDLE_STOP_MS / 60_000)) }
+                    break
+                }
+            }
+        }
         Log.i(TAG, "listening on 127.0.0.1:$port")
         thread(name = "rea-web-bridge", isDaemon = true) {
             while (!socket.isClosed) {
@@ -110,6 +131,7 @@ object ReaWebBridge {
     fun stop() {
         val socket = server ?: return
         server = null
+        ai.antigem.ui.browser.WebDebug.drop("rea")
         runCatching { socket.close() }
         open.toList().forEach { runCatching { it.close() } }
         open.clear()
@@ -126,6 +148,7 @@ object ReaWebBridge {
     private class Request(val method: String, val path: String, val headers: Map<String, String>, val head: String)
 
     private fun handle(client: Socket) {
+        lastUse = android.os.SystemClock.elapsedRealtime()
         open.add(client)
         try {
             client.soTimeout = 15_000
@@ -343,7 +366,7 @@ object ReaWebBridge {
         val upstream = connectDevTools()
         open.add(upstream)
         _state.update { it.copy(connections = it.connections + 1) }
-        activity("REA attached to ${tab.url.ifBlank { tab.title }}")
+        activity(L.rea.webBridge.reaAttachedToValue(tab.url.ifBlank { tab.title }))
         try {
             client.soTimeout = 0
             val upIn = upstream.inputStream
@@ -404,7 +427,7 @@ object ReaWebBridge {
                         val message = runCatching { JSONObject(String(text, Charsets.UTF_8)) }.getOrNull()
                         if (message?.optString("method") == "Page.captureScreenshot" && message.has("id")) {
                             val id = message.getInt("id")
-                            activity("Screenshot of ${tab.url.ifBlank { tab.title }}")
+                            activity(L.rea.webBridge.screenshotOfValue(tab.url.ifBlank { tab.title }))
                             if (!tab.isOnScreen) {
                                 // DevTools only draws what is on screen: the WebView draws background tabs itself
                                 answerWithDrawing(id)

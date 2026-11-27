@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,6 +47,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -75,6 +85,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
+import ai.antigem.i18n.L
 
 /**
  * Floating Jarvis (Settings → Jarvis → Screen & look → Float over other apps, off by default): outside AntiGem the
@@ -182,7 +193,7 @@ object JarvisFloating : LifecycleOwner, SavedStateRegistryOwner, OnBackPressedDi
     private fun talk() {
         val a = app ?: return
         if (!JarvisController.hasMic()) {
-            JarvisController.showProblem("Jarvis needs the microphone: allow it in AntiGem.")
+            JarvisController.showProblem(L.jarvis.floating.jarvisNeedsTheMicrophoneAllowIt)
             JarvisLauncher.openApp(a)
             return
         }
@@ -218,7 +229,7 @@ object JarvisFloating : LifecycleOwner, SavedStateRegistryOwner, OnBackPressedDi
     /** The orb was dropped on ✕: hidden until the user talks to Jarvis in the app. */
     private fun hideOrb() {
         JarvisPreferences.floatingHidden.set(true)
-        app?.let { Toast.makeText(it, "Jarvis is hidden. Talk to Jarvis in AntiGem to bring it back.", Toast.LENGTH_LONG).show() }
+        app?.let { Toast.makeText(it, L.jarvis.floating.jarvisIsHiddenTalkToJarvis, Toast.LENGTH_LONG).show() }
     }
 
     // ------------------------------------------------------------------------------------------------ windows
@@ -420,7 +431,23 @@ object JarvisFloating : LifecycleOwner, SavedStateRegistryOwner, OnBackPressedDi
         val orbDp = if (active) maxOf(idleDp, 50.dp) else idleDp
         val activeTasks = tasks.count { it.active }
         val attention = mcpProblem || tasks.any { it.state.needsUser }
-        Box(Modifier.onSizeChanged(onSize).padding(4.dp).size(orbDp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.onSizeChanged(onSize).padding(4.dp).size(orbDp)
+                // the window takes raw touches (OrbFrame): TalkBack gets a name, its state and the same actions, and
+                // "Hide Jarvis" for what dragging onto the ✕ does (remembered: this recomposes with the voice level)
+                .then(remember(attention, activeTasks, phase) {
+                    Modifier.semantics(mergeDescendants = true) {
+                        contentDescription = L.common.jarvis
+                        if (attention) stateDescription = L.jarvis.overlay.needsYourAttention
+                        else if (activeTasks > 0) stateDescription = L.jarvis.overlay.tasksRunning(activeTasks)
+                        role = Role.Button
+                        onClick(label = if (phase == Phase.LISTENING) L.common.send else L.jarvis.panel.talk) { talk(); true }
+                        onLongClick(label = L.jarvis.overlay.openPanel) { openPanel(); true }
+                        customActions = listOf(CustomAccessibilityAction(L.jarvis.floating.hideJarvis) { hideOrb(); true })
+                    }
+                }),
+            contentAlignment = Alignment.Center
+        ) {
             if (active) JarvisOrb(phase, lvl, orbDp) else IdleOrb(orbDp, activeTasks, attention)
             if (active && (activeTasks > 0 || attention)) TaskBadge(orbDp, activeTasks, attention)
         }
@@ -439,10 +466,10 @@ object JarvisFloating : LifecycleOwner, SavedStateRegistryOwner, OnBackPressedDi
                     .background(if (over) Danger.copy(alpha = 0.9f) else Color(0xE6101827))
                     .border(1.5.dp, if (over) Color.White.copy(alpha = 0.8f) else Color.White.copy(alpha = 0.35f), CircleShape),
                 contentAlignment = Alignment.Center
-            ) { Icon(Icons.Filled.Close, "Hide Jarvis", tint = Color.White, modifier = Modifier.size(28.dp)) }
+            ) { Icon(Icons.Filled.Close, L.jarvis.floating.hideJarvis, tint = Color.White, modifier = Modifier.size(28.dp)) }
             Spacer(Modifier.height(8.dp))
             Text(
-                "Hide until you talk to Jarvis in AntiGem",
+                L.jarvis.floating.hideUntilYouTalkToJarvis,
                 color = Color.White, fontSize = 11.5.sp,
                 modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xCC101827)).padding(horizontal = 10.dp, vertical = 4.dp)
             )

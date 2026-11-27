@@ -70,3 +70,18 @@ scripts/render_bundle/out/
 scripts/render_bundle/.work/
 # IDE bridge copy of /version.json (copied by the Gradle build and scripts/agy_ide_bridge_builder.sh)
 agy_ide_bridge/pkg/buildinfo/version.json
+# Security audit / fix plan (unfixed vulnerability details, keep out of git)
+security_assesment.md
+# Chat RAM study and fix notes (local working notes)
+chat_issue.md
+# Separate projects with their own git repos (no longer submodules of this repo)
+/termux-x11/
+/termux-api/
+/antigem-vscode/
+/antigem-chrome-extension/
+/antigem_mini_apps/
+/antigem_plugins/
+/antigem_languages/
+/antigem_website/
+/my_website/
+/website/

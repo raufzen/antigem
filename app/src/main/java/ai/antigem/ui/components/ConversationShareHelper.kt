@@ -30,6 +30,7 @@ import java.io.InputStreamReader
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import ai.antigem.i18n.L
 
 data class SharedConversationData(
     val title: String,
@@ -47,7 +48,8 @@ object ConversationShareHelper {
         context: Context,
         conversationId: String,
         title: String,
-        activeMessages: List<ChatMessage>? = null,
+        /** Set for a Claude / OpenCode / Codex chat (loads from that agent); null for Antigravity (loads from the hub). */
+        loadAgentMessages: (suspend () -> List<ChatMessage>)? = null,
         agyHubClient: AgyHubClient = AgyHubClient(),
         snackbarHostState: SnackbarHostState? = null
     ) = withContext(Dispatchers.IO) {
@@ -60,8 +62,8 @@ object ConversationShareHelper {
             } else {
                 // Fallback to client-side trajectory assembly if bridge server is unreachable
                 var rawSteps: List<Step>? = null
-                val messages: List<ChatMessage> = if (!activeMessages.isNullOrEmpty()) {
-                    activeMessages
+                val messages: List<ChatMessage> = if (loadAgentMessages != null) {
+                    loadAgentMessages()
                 } else {
                     val stepsRes = agyHubClient.getCascadeTrajectorySteps(conversationId)
                     if (stepsRes.isSuccess) {
@@ -71,7 +73,7 @@ object ConversationShareHelper {
                         engine.ingestStepsDirect(steps, conversationId)
                     } else {
                         withContext(Dispatchers.Main) {
-                            AppToastHelper.showToast("Failed to load conversation: ${stepsRes.exceptionOrNull()?.message}", ChatToastType.ERROR)
+                            AppToastHelper.showToast(L.components.conversationShareHelper.failedToLoadConversationValue(stepsRes.exceptionOrNull()?.message), ChatToastType.ERROR)
                         }
                         return@withContext
                     }
@@ -79,7 +81,7 @@ object ConversationShareHelper {
 
                 if (messages.isEmpty()) {
                     withContext(Dispatchers.Main) {
-                        AppToastHelper.showToast("No messages to share", ChatToastType.INFO)
+                        AppToastHelper.showToast(L.components.conversationShareHelper.noMessagesToShare, ChatToastType.INFO)
                     }
                     return@withContext
                 }
@@ -113,18 +115,18 @@ object ConversationShareHelper {
                 if (snackbarHostState != null) {
                     kotlinx.coroutines.CoroutineScope(Dispatchers.Main).launch {
                         snackbarHostState.showSnackbar(
-                            message = "$savedFileName saved to Downloads/AntiGem/Exports",
+                            message = L.components.conversationShareHelper.savedfilenameSavedToDownloadsAntigem(savedFileName),
                             duration = SnackbarDuration.Short
                         )
                     }
                 } else {
-                    AppToastHelper.showToast("$savedFileName saved to Downloads/AntiGem/Exports", ChatToastType.SUCCESS)
+                    AppToastHelper.showToast(L.components.conversationShareHelper.savedfilenameSavedToDownloadsAntigem(savedFileName), ChatToastType.SUCCESS)
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Share failed: ${e.message}", e)
             withContext(Dispatchers.Main) {
-                AppToastHelper.showToast("Share error: ${e.message}", ChatToastType.ERROR)
+                AppToastHelper.showToast(L.components.conversationShareHelper.shareErrorMessage(e.message), ChatToastType.ERROR)
             }
         }
     }
@@ -139,13 +141,13 @@ object ConversationShareHelper {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            val chooser = Intent.createChooser(shareIntent, "Share AntiGem Chat").apply {
+            val chooser = Intent.createChooser(shareIntent, L.components.conversationShareHelper.shareAntigemChat).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(chooser)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to launch share chooser: ${e.message}")
-            AppToastHelper.showToast("Could not open share chooser", ChatToastType.ERROR)
+            AppToastHelper.showToast(L.components.conversationShareHelper.couldNotOpenShareChooser, ChatToastType.ERROR)
         }
     }
 
@@ -234,7 +236,7 @@ object ConversationShareHelper {
      */
     fun parseSharedConversation(inputStream: InputStream): SharedConversationData {
         val reader = BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8))
-        var title = "Shared Conversation"
+        var title = L.components.conversationShareHelper.sharedConversation
         var conversationId = "shared_${System.currentTimeMillis()}"
         var exportedAt = ""
         val steps = mutableListOf<Step>()

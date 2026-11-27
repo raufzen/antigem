@@ -1,7 +1,7 @@
 package ai.antigem.ui.components
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,12 +14,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import ai.antigem.domain.model.AiModel
 import ai.antigem.theme.ClaudeTerracotta
+import ai.antigem.i18n.L
 
 @Composable
 fun SummaryModelPickerDialog(
@@ -65,16 +69,17 @@ fun SummaryModelPickerDialog(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Summarize Conversation",
+                        text = L.components.summaryModelPicker.summarizeConversation,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.semantics { heading() }
                     )
                 }
 
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Select model for summarization:",
+                    text = L.components.summaryModelPicker.selectModelForSummarization,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -99,7 +104,7 @@ fun SummaryModelPickerDialog(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Failed: $errorMessage",
+                                text = L.components.summaryModelPicker.failedErrormessage(errorMessage),
                                 fontSize = 11.5.sp,
                                 color = MaterialTheme.colorScheme.onErrorContainer
                             )
@@ -122,7 +127,8 @@ fun SummaryModelPickerDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable { selectedModelId = model.id },
+                                // one TalkBack item per row: "<model>, Selected/Not selected, Radio button"
+                                .selectable(selected = isSelected, role = Role.RadioButton) { selectedModelId = model.id },
                             shape = RoundedCornerShape(8.dp),
                             color = if (isSelected) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
                             border = BorderStroke(
@@ -139,7 +145,9 @@ fun SummaryModelPickerDialog(
                                 RadioButton(
                                     selected = isSelected,
                                     onClick = { selectedModelId = model.id },
-                                    colors = RadioButtonDefaults.colors(selectedColor = ClaudeTerracotta)
+                                    colors = RadioButtonDefaults.colors(selectedColor = ClaudeTerracotta),
+                                    // the row carries it for TalkBack; still tappable
+                                    modifier = Modifier.mergedIntoRow()
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
@@ -160,7 +168,7 @@ fun SummaryModelPickerDialog(
                     horizontalArrangement = Arrangement.End
                 ) {
                     TextButton(onClick = onDismiss) {
-                        Text("Cancel", fontSize = 13.sp)
+                        Text(L.common.cancel, fontSize = 13.sp)
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
@@ -168,7 +176,7 @@ fun SummaryModelPickerDialog(
                         colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text("Start Summarize", fontSize = 13.sp)
+                        Text(L.components.summaryModelPicker.startSummarize, fontSize = 13.sp)
                     }
                 }
             }

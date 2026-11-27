@@ -2,7 +2,8 @@ package ai.antigem.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -21,10 +22,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.antigem.domain.model.AgentKind
+import ai.antigem.i18n.L
 
 val ClaudeAccent = Color(0xFFD97757)
 
@@ -38,10 +41,10 @@ val OpenCodeAccent = Color(0xFF10B981)
 val CodexAccent = Color(0xFF8B5CF6)
 
 fun AgentKind.label(): String = when (this) {
-    AgentKind.AGY -> "Antigravity"
-    AgentKind.CLAUDE -> "Claude Code"
+    AgentKind.AGY -> L.common.antigravity
+    AgentKind.CLAUDE -> L.common.claudeCode
     AgentKind.OPENCODE -> "OpenCode"
-    AgentKind.CODEX -> "Codex"
+    AgentKind.CODEX -> L.common.codex
 }
 
 fun AgentKind.accent(): Color = when (this) {
@@ -70,7 +73,8 @@ fun AgentPicker(
             .clip(shape)
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), shape)
             .horizontalScroll(rememberScrollState())
-            .padding(3.dp),
+            .padding(3.dp)
+            .selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -81,7 +85,8 @@ fun AgentPicker(
                 modifier = Modifier
                     .clip(RoundedCornerShape(17.dp))
                     .background(if (isSelected) accent.copy(alpha = 0.16f) else Color.Transparent)
-                    .clickable { onSelect(agent) }
+                    // selectable: TalkBack says which agent is chosen (same tap and ripple as clickable)
+                    .selectable(selected = isSelected, role = Role.Tab) { onSelect(agent) }
                     .padding(horizontal = 14.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -110,6 +115,6 @@ fun ClaudeBadge(modifier: Modifier = Modifier) {
             .background(ClaudeAccent.copy(alpha = 0.16f))
             .padding(horizontal = 5.dp, vertical = 1.dp)
     ) {
-        Text(text = "Claude", fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = ClaudeAccent)
+        Text(text = L.common.claude, fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = ClaudeAccent)
     }
 }

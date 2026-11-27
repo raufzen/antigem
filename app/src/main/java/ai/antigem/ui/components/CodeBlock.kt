@@ -13,6 +13,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +41,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -57,6 +65,7 @@ import androidx.compose.ui.window.DialogProperties
 import ai.antigem.theme.*
 import kotlinx.coroutines.delay
 import java.util.regex.Pattern
+import ai.antigem.i18n.L
 
 // Syntax colors come from the app theme (syntax_* tokens; One Dark in the default themes)
 private val SynKeyword: Color get() = AppColors.syntaxKeyword
@@ -86,6 +95,44 @@ fun isPreviewableCode(code: String, language: String): Boolean {
 /**
  * Builds standard responsive HTML wrapper for previewing code artifacts.
  */
+/**
+ * The HTML preview's WebViewClient: the page can't leave the preview by itself. Only http(s) is followed at all (no
+ * intent:, app or file links), and when the page (a link or a script) wants to go to another page, [onLink] shows the
+ * URL, which opens outside AntiGem only after a tap. Frames inside the page load normally.
+ */
+private class PreviewWebViewClient(private val onLink: (String) -> Unit) : android.webkit.WebViewClient() {
+    override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean {
+        val scheme = request.url.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return true
+        if (request.isForMainFrame) { onLink(request.url.toString()); return true }
+        return false
+    }
+}
+
+/** Asks before a preview's link opens outside AntiGem, with the full URL shown. */
+@Composable
+private fun PreviewLinkDialog(url: String?, onDismiss: () -> Unit) {
+    if (url == null) return
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(L.components.codeBlock.openLink) },
+        text = { Text(url, fontFamily = FontFamily.Monospace, fontSize = 12.sp) },
+        confirmButton = {
+            TextButton(onClick = {
+                onDismiss()
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }) { Text(L.common.open) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(L.common.cancel) } }
+    )
+}
+
 fun prepareHtmlForPreview(rawCode: String, isDark: Boolean): String {
     val trimmed = rawCode.trim()
     val isRawSvg = trimmed.startsWith("<svg", ignoreCase = true)
@@ -178,8 +225,22 @@ fun CodeBlock(
         CodeBlockExpansionCache.setExpanded(codeKey, next)
     }
 
-    val cachedCode = remember(code, language) {
-        CodeBlockCache.getOrCompute(code, language)
+    // a very long block is highlighted off the main thread (shown plain for a moment) so it never stalls scrolling
+    var cachedCode by remember(code, language) {
+        mutableStateOf(
+            CodeBlockCache.getIfPresent(code, language)
+                ?: if (code.length <= CodeBlockCache.ASYNC_HIGHLIGHT_CHARS) CodeBlockCache.getOrCompute(code, language)
+                else CodeBlockCache.plain(code)
+        )
+    }
+    if (code.length > CodeBlockCache.ASYNC_HIGHLIGHT_CHARS) {
+        LaunchedEffect(code, language) {
+            if (CodeBlockCache.getIfPresent(code, language) !== cachedCode) {
+                cachedCode = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    CodeBlockCache.getOrCompute(code, language)
+                }
+            }
+        }
     }
     val lineCount = cachedCode.lineCount
     val isLongCode = cachedCode.isLongCode
@@ -220,7 +281,13 @@ fun CodeBlock(
             // Language Badge + Line count
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                // TalkBack: "kotlin code, 12 lines" as a heading (not "K-O-T-L-I-N, bullet, 12 lines")
+                modifier = Modifier.clearAndSetSemantics {
+                    val lines = L.components.toolOutput.lineCount(lineCount)
+                    contentDescription = if (language.isBlank()) "${L.common.code}, $lines" else L.components.a11y.codeBlockLabel(language, lines)
+                    heading()
+                }
             ) {
                 Text(
                     text = language.ifEmpty { "code" }.uppercase(),
@@ -246,15 +313,16 @@ fun CodeBlock(
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
                         .background(Color.White.copy(alpha = 0.08f))
-                        .padding(2.dp),
+                        .padding(2.dp)
+                        .selectableGroup(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Code Tab
+                    // Code Tab (selectable: TalkBack says which tab is on; same tap and ripple as clickable)
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(14.dp))
                             .background(if (selectedTab == 0) ClaudeTerracotta else Color.Transparent)
-                            .clickable { selectedTab = 0 }
+                            .selectable(selected = selectedTab == 0, role = Role.Tab) { selectedTab = 0 }
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -266,7 +334,7 @@ fun CodeBlock(
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
-                                text = "Code",
+                                text = L.common.code,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (selectedTab == 0) Color.White else AppColors.codeText.copy(alpha = 0.6f)
@@ -279,7 +347,7 @@ fun CodeBlock(
                         modifier = Modifier
                             .clip(RoundedCornerShape(14.dp))
                             .background(if (selectedTab == 1) ClaudeTerracotta else Color.Transparent)
-                            .clickable { selectedTab = 1 }
+                            .selectable(selected = selectedTab == 1, role = Role.Tab) { selectedTab = 1 }
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -291,7 +359,7 @@ fun CodeBlock(
                             )
                             Spacer(modifier = Modifier.width(3.dp))
                             Text(
-                                text = "Preview",
+                                text = L.common.preview,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (selectedTab == 1) Color.White else AppColors.codeText.copy(alpha = 0.6f)
@@ -310,7 +378,7 @@ fun CodeBlock(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "Reload preview",
+                            contentDescription = L.components.codeBlock.reloadPreview,
                             tint = AppColors.codeText.copy(alpha = 0.7f),
                             modifier = Modifier.size(15.dp)
                         )
@@ -325,7 +393,7 @@ fun CodeBlock(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.OpenInFull,
-                    contentDescription = "Fullscreen",
+                    contentDescription = L.components.codeBlock.fullscreen,
                     tint = AppColors.codeText.copy(alpha = 0.7f),
                     modifier = Modifier.size(14.dp)
                 )
@@ -339,7 +407,7 @@ fun CodeBlock(
                 ) {
                     Icon(
                         imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (isExpanded) "Collapse code block" else "Expand full height",
+                        contentDescription = if (isExpanded) L.components.codeBlock.collapseCodeBlock else L.components.codeBlock.expandFullHeight,
                         tint = if (isExpanded) ClaudeTerracotta else AppColors.codeText.copy(alpha = 0.7f),
                         modifier = Modifier.size(17.dp)
                     )
@@ -353,21 +421,21 @@ fun CodeBlock(
                     val clip = ClipData.newPlainText("Copied Code", code)
                     clipboard.setPrimaryClip(clip)
                     isCopied = true
-                    Toast.makeText(context, "Code copied to clipboard", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, L.components.codeBlock.codeCopiedToClipboard, Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.size(28.dp)
             ) {
                 if (isCopied) {
                     Icon(
                         imageVector = Icons.Default.Check,
-                        contentDescription = "Copied",
+                        contentDescription = L.common.copied,
                         tint = QuotaGreen,
                         modifier = Modifier.size(16.dp)
                     )
                 } else {
                     Icon(
                         imageVector = Icons.Outlined.ContentCopy,
-                        contentDescription = "Copy code",
+                        contentDescription = L.components.codeBlock.copyCode,
                         tint = AppColors.codeText.copy(alpha = 0.7f),
                         modifier = Modifier.size(15.dp)
                     )
@@ -382,7 +450,7 @@ fun CodeBlock(
                 ) {
                     Icon(
                         imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = "Run in terminal",
+                        contentDescription = L.components.codeBlock.runInTerminal,
                         tint = ClaudeTerracotta,
                         modifier = Modifier.size(18.dp)
                     )
@@ -405,6 +473,7 @@ fun CodeBlock(
                     val previewHtml = remember(code) {
                         prepareHtmlForPreview(code, isDark = false)
                     }
+                    var previewLink by remember { mutableStateOf<String?>(null) }
                     AndroidView(
                         factory = { ctx ->
                             WebView(ctx).apply {
@@ -418,11 +487,13 @@ fun CodeBlock(
                                 settings.useWideViewPort = true
                                 settings.builtInZoomControls = true
                                 settings.displayZoomControls = false
+                                webViewClient = PreviewWebViewClient { previewLink = it }
                                 loadDataWithBaseURL("https://localhost", previewHtml, "text/html", "UTF-8", null)
                             }
                         },
                         modifier = Modifier.fillMaxSize()
                     )
+                    PreviewLinkDialog(previewLink) { previewLink = null }
                 }
             }
         } else {
@@ -455,7 +526,9 @@ fun CodeBlock(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { toggleExpand() },
+                        // TalkBack: "Expanded" / "Collapsed"
+                        .semantics { stateDescription = if (isExpanded) L.components.a11y.expanded else L.components.a11y.collapsed }
+                        .clickable(role = Role.Button) { toggleExpand() },
                     color = CodeBlockBgDark.copy(alpha = 0.7f)
                 ) {
                     Row(
@@ -466,11 +539,14 @@ fun CodeBlock(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         val hiddenLines = (lineCount - CODE_PREVIEW_LINES).coerceAtLeast(1)
+                        val footerText = if (isExpanded) L.components.codeBlock.collapseCodeBlock2 else L.components.codeBlock.showAllLinecountLinesHiddenlinesMore(lineCount, hiddenLines)
                         Text(
-                            text = if (isExpanded) "Collapse code block ▲" else "Show all $lineCount lines ($hiddenLines more) ▼",
+                            text = footerText,
                             fontSize = 11.5.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = ClaudeTerracotta
+                            color = ClaudeTerracotta,
+                            // TalkBack reads it without the ▲ / ▼ ("black down-pointing triangle")
+                            modifier = Modifier.clearAndSetSemantics { contentDescription = footerText.replace("▲", "").replace("▼", "").trim() }
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Icon(
@@ -510,14 +586,14 @@ fun CodeBlock(
                         title = {
                             Column {
                                 Text(
-                                    text = if (selectedTab == 1 && isPreviewable) "Preview: ${language.uppercase()}" else language.ifEmpty { "Code" }.uppercase(),
+                                    text = if (selectedTab == 1 && isPreviewable) L.components.codeBlock.previewLanguage(language.uppercase()) else language.ifEmpty { L.common.code }.uppercase(),
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = if (selectedTab == 1 && isPreviewable) "Interactive Artifact" else "$lineCount lines",
+                                    text = if (selectedTab == 1 && isPreviewable) L.components.codeBlock.interactiveArtifact else "$lineCount lines",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
@@ -527,7 +603,7 @@ fun CodeBlock(
                         },
                         navigationIcon = {
                             IconButton(onClick = { isFullscreen = false }) {
-                                Icon(Icons.Default.Close, contentDescription = "Close")
+                                Icon(Icons.Default.Close, contentDescription = L.common.close)
                             }
                         },
                         actions = {
@@ -536,18 +612,19 @@ fun CodeBlock(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(16.dp))
                                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                                        .padding(2.dp),
+                                        .padding(2.dp)
+                                        .selectableGroup(),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(14.dp))
                                             .background(if (selectedTab == 0) ClaudeTerracotta else Color.Transparent)
-                                            .clickable { selectedTab = 0 }
+                                            .selectable(selected = selectedTab == 0, role = Role.Tab) { selectedTab = 0 }
                                             .padding(horizontal = 8.dp, vertical = 3.dp)
                                     ) {
                                         Text(
-                                            text = "Code",
+                                            text = L.common.code,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = if (selectedTab == 0) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
@@ -557,11 +634,11 @@ fun CodeBlock(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(14.dp))
                                             .background(if (selectedTab == 1) ClaudeTerracotta else Color.Transparent)
-                                            .clickable { selectedTab = 1 }
+                                            .selectable(selected = selectedTab == 1, role = Role.Tab) { selectedTab = 1 }
                                             .padding(horizontal = 8.dp, vertical = 3.dp)
                                     ) {
                                         Text(
-                                            text = "Preview",
+                                            text = L.common.preview,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = if (selectedTab == 1) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
@@ -571,7 +648,7 @@ fun CodeBlock(
 
                                 if (selectedTab == 1) {
                                     IconButton(onClick = { reloadKey++ }) {
-                                        Icon(Icons.Default.Refresh, contentDescription = "Reload")
+                                        Icon(Icons.Default.Refresh, contentDescription = L.common.reload)
                                     }
                                 }
                             }
@@ -590,12 +667,12 @@ fun CodeBlock(
                                     val clip = ClipData.newPlainText("Copied Code", code)
                                     clipboard.setPrimaryClip(clip)
                                     modalCopied = true
-                                    Toast.makeText(context, "Code copied to clipboard", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, L.components.codeBlock.codeCopiedToClipboard, Toast.LENGTH_SHORT).show()
                                 }
                             ) {
                                 Icon(
                                     imageVector = if (modalCopied) Icons.Default.Check else Icons.Outlined.ContentCopy,
-                                    contentDescription = "Copy code",
+                                    contentDescription = L.components.codeBlock.copyCode,
                                     tint = if (modalCopied) QuotaGreen else MaterialTheme.colorScheme.onSurface
                                 )
                             }
@@ -618,6 +695,7 @@ fun CodeBlock(
                                 val previewHtml = remember(code) {
                                     prepareHtmlForPreview(code, isDark = false)
                                 }
+                                var previewLink by remember { mutableStateOf<String?>(null) }
                                 AndroidView(
                                     factory = { ctx ->
                                         WebView(ctx).apply {
@@ -631,11 +709,13 @@ fun CodeBlock(
                                             settings.useWideViewPort = true
                                             settings.builtInZoomControls = true
                                             settings.displayZoomControls = false
+                                            webViewClient = PreviewWebViewClient { previewLink = it }
                                             loadDataWithBaseURL("https://localhost", previewHtml, "text/html", "UTF-8", null)
                                         }
                                     },
                                     modifier = Modifier.fillMaxSize()
                                 )
+                                PreviewLinkDialog(previewLink) { previewLink = null }
                             }
                         }
                     } else {
@@ -663,6 +743,8 @@ fun CodeBlock(
                                 modifier = Modifier
                                     .padding(start = 12.dp, end = 10.dp, top = 14.dp, bottom = 14.dp)
                                     .widthIn(min = 28.dp)
+                                    // line numbers: not read as "1 2 3 4 …"
+                                    .clearAndSetSemantics { }
                             )
 
                             // Vertical divider line
@@ -706,18 +788,53 @@ data class CachedCodeBlock(
 )
 
 object CodeBlockCache {
-    private val cache = android.util.LruCache<Int, CachedCodeBlock>(400)
+    /** Blocks longer than this are highlighted off the main thread (see CodeBlock). */
+    const val ASYNC_HIGHLIGHT_CHARS = 40_000
+
+    /** Room for highlighted blocks, in estimated bytes: hundreds of normal blocks, only a few giant ones. */
+    private const val MAX_BYTES = 16 * 1024 * 1024
+
+    /** The exact code and language (not a hash: two blocks whose hashes collide never share a result). */
+    private data class Key(val code: String, val language: String)
+
+    private val cache = object : android.util.LruCache<Key, CachedCodeBlock>(MAX_BYTES) {
+        override fun sizeOf(key: Key, value: CachedCodeBlock): Int = estimateBytes(key, value)
+    }
+
+    private fun estimateBytes(key: Key, value: CachedCodeBlock): Int {
+        // the key's text, the highlighted text and its preview (2 bytes a char at most), plus each colour span
+        val chars = key.code.length.toLong() + value.fullText.length + (if (value.isLongCode) value.previewText.length else 0)
+        val spans = value.fullText.spanStyles.size.toLong() + (if (value.isLongCode) value.previewText.spanStyles.size else 0)
+        return (chars * 2 + spans * 48 + 64).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun keyOf(code: String, language: String) = Key(code, language.lowercase().trim())
 
     fun prewarm(code: String, language: String) {
         getOrCompute(code, language)
     }
 
+    /** The highlighted block when it is cached, without computing it. */
+    fun getIfPresent(code: String, language: String): CachedCodeBlock? = cache.get(keyOf(code, language))
+
+    /** [code] without colours (instant), shown while a very long block is highlighted in the background. */
+    fun plain(code: String): CachedCodeBlock = split(AnnotatedString(code))
+
     fun getOrCompute(code: String, language: String): CachedCodeBlock {
-        val t0 = System.nanoTime()
-        val key = code.hashCode() * 31 + language.lowercase().trim().hashCode()
+        val key = keyOf(code, language)
         val hit = cache.get(key)
         if (hit != null) return hit
-        val full = highlightSyntax(code, language.lowercase().trim())
+        val cached = split(highlightSyntax(code, key.language))
+        cache.put(key, cached)
+        return cached
+    }
+
+    /** Drops part of the cache (Android is short of memory): [fraction] of the room is kept. */
+    fun trim(fraction: Float) {
+        cache.trimToSize((MAX_BYTES * fraction).toInt())
+    }
+
+    private fun split(full: AnnotatedString): CachedCodeBlock {
         val raw = full.text
         var lines = 1
         var endOfPreview = raw.length
@@ -733,9 +850,7 @@ object CodeBlockCache {
         }
         val isLong = lines > CODE_PREVIEW_LINES
         val preview = if (isLong) full.subSequence(0, endOfPreview) else full
-        val cached = CachedCodeBlock(full, preview, lines, isLong)
-        cache.put(key, cached)
-        return cached
+        return CachedCodeBlock(full, preview, lines, isLong)
     }
 }
 

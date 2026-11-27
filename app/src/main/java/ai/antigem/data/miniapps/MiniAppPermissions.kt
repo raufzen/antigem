@@ -6,6 +6,7 @@ import ai.antigem.data.preferences.AuthPreferences
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import ai.antigem.i18n.L
 
 /**
  * The mini app permission system (a small Android): an app can only ask for what its manifest declares, the user
@@ -22,7 +23,9 @@ object MiniAppPermissions {
         BuildConfig.BRIDGE_PORT, BuildConfig.HUB_PORT, BuildConfig.BROWSER_MCP_PORT, BuildConfig.BROWSER_MCP_PORT + 100,
         // the Ubuntu chroot's bridge and hub
         BuildConfig.BRIDGE_PORT + AuthPreferences.CHROOT_PORT_OFFSET, BuildConfig.HUB_PORT + AuthPreferences.CHROOT_PORT_OFFSET,
-    )
+        // REA's DevTools bridge
+        9222,
+    ) + ai.antigem.data.security.LocalPorts.all() // the ports AntiGem's servers really got (moved, random)
 
     private fun prefs(context: Context) = context.getSharedPreferences("mini_app_permissions", Context.MODE_PRIVATE)
     private fun stored(context: Context, app: MiniApp): JSONObject =
@@ -121,8 +124,15 @@ object MiniAppPermissions {
      */
     fun needsTypedConfirm(context: Context, app: MiniApp, name: String): Boolean {
         if (name == "storage:all") return true
+        // localhost with no "ports" list: every server on the phone
+        if (name == "localhost") return app.permissions[name]?.optJSONArray("ports") == null
         // tools that run commands, drive the phone or read the browser
-        if (name.startsWith("mcp:")) return MiniAppMcpAccess.isSensitive(name.removePrefix("mcp:").substringBefore('/'))
+        if (name.startsWith("mcp:")) {
+            val server = name.removePrefix("mcp:").substringBefore('/')
+            val tool = name.substringAfter('/', "").ifEmpty { null }
+            val readOnly = tool == null && app.permissions[name]?.optBoolean("readOnly") == true
+            return MiniAppMcpAccess.isSensitive(server) || (!readOnly && MiniAppMcpAccess.isSensitiveTool(server, tool))
+        }
         val path = app.permissions[name]?.optString("path")?.takeIf { name.startsWith("storage:") } ?: return false
         val f = runCatching { toFile(context, app, path) }.getOrNull() ?: return true
         // a hidden folder in home (keys, logins): the typed confirmation, except for the official apps
@@ -150,47 +160,49 @@ object MiniAppPermissions {
                 // no list: any host; an empty list: none (the same rule as checkNetwork)
                 val hosts = spec.optJSONArray("hosts")?.let { a -> (0 until a.length()).map { a.optString(it) } }
                 when {
-                    hosts == null || "*" in hosts -> Info("Internet", "Connect to any website or server", true)
-                    hosts.isEmpty() -> Info("Internet", "No website (the app's list of sites is empty)", false)
-                    else -> Info("Internet", "Only: " + hosts.joinToString(", "), false)
+                    hosts == null || "*" in hosts -> Info(L.miniapps.miniAppPermissions.internet, L.miniapps.miniAppPermissions.connectToAnyWebsiteOrServer, true)
+                    hosts.isEmpty() -> Info(L.miniapps.miniAppPermissions.internet, L.miniapps.miniAppPermissions.noWebsiteTheAppsListOf, false)
+                    else -> Info(L.miniapps.miniAppPermissions.internet, L.miniapps.miniAppPermissions.onlyValue(hosts.joinToString(", ")), false)
                 }
             }
             name == "localhost" -> {
                 val ports = spec.optJSONArray("ports")?.let { a -> (0 until a.length()).map { a.optInt(it) } }
-                Info("Local servers", when {
-                    ports == null -> "Connect to servers running on this phone (localhost)"
-                    ports.isEmpty() -> "No local server (the app's list of ports is empty)"
-                    else -> "localhost ports: " + ports.joinToString(", ")
-                }, false)
+                // any port (no list): the app can talk to every server on the phone (other apps', dev servers): dangerous
+                Info(L.miniapps.miniAppPermissions.localServers, when {
+                    ports == null -> L.miniapps.miniAppPermissions.connectToServersRunningOnThis
+                    ports.isEmpty() -> L.miniapps.miniAppPermissions.noLocalServerTheAppsList
+                    else -> L.miniapps.miniAppPermissions.localhostPortsValue(ports.joinToString(", "))
+                }, ports == null)
             }
-            name == "storage:all" -> Info("All files", "${accessText(spec.optString("access"))} everything in your shared storage and home folder", true)
+            name == "storage:all" -> Info(L.miniapps.miniAppPermissions.allFiles, L.miniapps.miniAppPermissions.accesstextEverythingInYourSharedStorage(accessText(spec.optString("access"))), true)
             name.startsWith("storage:") -> {
                 val path = spec.optString("path")
                 // a hidden folder in home (~/.gemini, ~/.ssh…): always flagged, even read only
                 val hidden = path.trim().let { it.startsWith("~/.") || it.contains("/home/.") }
-                if (hidden) Info("Hidden folder $path", accessText(spec.optString("access")) + " (it may hold logins or keys)", true)
-                else Info("Folder $path", accessText(spec.optString("access")), spec.optString("access") != "read")
+                if (hidden) Info(L.miniapps.miniAppPermissions.hiddenFolderPath(path), L.miniapps.miniAppPermissions.accesstextItMayHoldLoginsOr(accessText(spec.optString("access"))), true)
+                else Info(L.miniapps.miniAppPermissions.folderPath(path), accessText(spec.optString("access")), spec.optString("access") != "read")
             }
-            name == "notifications" -> Info("Notifications", "Show notifications and reminders", false)
-            name == "background" -> Info("Run in the background", "Do tasks while closed, up to ${MiniAppScheduler.MAX_RUNS_PER_DAY} times a day", false)
-            name == "clipboard" -> Info("Clipboard", "Read what you copied", false)
-            name == "camera" -> Info("Camera", "Take pictures and video", true)
-            name == "microphone" -> Info("Microphone", "Record audio", true)
+            name == "notifications" -> Info(L.miniapps.miniAppPermissions.notifications, L.miniapps.miniAppPermissions.showNotificationsAndReminders, false)
+            name == "background" -> Info(L.miniapps.miniAppPermissions.runInTheBackground, L.miniapps.miniAppPermissions.doTasksWhileClosedUpTo(MiniAppScheduler.MAX_RUNS_PER_DAY), false)
+            name == "clipboard" -> Info(L.miniapps.miniAppPermissions.clipboard, L.miniapps.miniAppPermissions.readWhatYouCopied, false)
+            name == "camera" -> Info(L.miniapps.miniAppPermissions.camera, L.miniapps.miniAppPermissions.takePicturesAndVideo, true)
+            name == "microphone" -> Info(L.miniapps.miniAppPermissions.microphone, L.miniapps.miniAppPermissions.recordAudio, true)
             name.startsWith("mcp:") -> {
                 val server = name.removePrefix("mcp:").substringBefore('/')
                 val tool = name.substringAfter('/', "")
-                val sensitive = MiniAppMcpAccess.isSensitive(server)
+                val sensitive = MiniAppMcpAccess.isSensitive(server) ||
+                    (!(tool.isEmpty() && spec.optBoolean("readOnly")) && MiniAppMcpAccess.isSensitiveTool(server, tool.ifEmpty { null }))
                 when {
-                    tool.isNotEmpty() -> Info("$server: $tool", if (sensitive) "Use the $tool tool (it can act on your phone)" else "Use the $tool tool", sensitive)
-                    spec.optBoolean("readOnly") -> Info("AntiGem tools: $server", "Only its read-only tools", sensitive)
-                    else -> Info("AntiGem tools: $server", if (sensitive) "Every $server tool: it can control parts of your phone" else "Every $server tool", sensitive)
+                    tool.isNotEmpty() -> Info("$server: $tool", if (sensitive) L.miniapps.miniAppPermissions.useTheToolToolItCan(tool) else L.miniapps.miniAppPermissions.useTheToolTool(tool), sensitive)
+                    spec.optBoolean("readOnly") -> Info(L.miniapps.miniAppPermissions.antigemToolsServer(server), L.miniapps.miniAppPermissions.onlyItsReadOnlyTools, sensitive)
+                    else -> Info(L.miniapps.miniAppPermissions.antigemToolsServer(server), if (sensitive) L.miniapps.miniAppPermissions.everyServerToolItCanControl(server) else L.miniapps.miniAppPermissions.everyServerTool(server), sensitive)
                 }
             }
             else -> Info(name, "", false)
         }
     }
 
-    fun accessText(access: String?) = when (MiniApps.normalizeAccess(access)) { "write" -> "Write (not read)"; "readwrite" -> "Read and change"; else -> "Read only" }
+    fun accessText(access: String?) = when (MiniApps.normalizeAccess(access)) { "write" -> L.miniapps.miniAppPermissions.writeNotRead; "readwrite" -> L.miniapps.miniAppPermissions.readAndChange; else -> L.miniapps.miniAppPermissions.readOnly }
 
     // ---------- network ----------
 
@@ -269,11 +281,28 @@ object MiniAppPermissions {
      */
     fun isProtected(context: Context, f: File, allowDot: Boolean = false): Boolean {
         val home = MiniApps.home(context).canonicalFile
+        if (isStartupPath(home, f)) return true
         if (within(f, MiniApps.dataRoot(context).canonicalFile)) return true
         if (within(f, File(home, ".antigem").canonicalFile)) return true
         if (within(f, MiniApps.appsDir(context).canonicalFile)) return true
         if (!allowDot && isHomeDotPath(context, f)) return true
         return !within(f, home) && !within(f, sharedRoot)
+    }
+
+    /** Shell start files in home: they run as AntiGem in every new terminal. */
+    private val STARTUP_FILES = listOf(".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".inputrc")
+
+    /** Folders whose contents run as AntiGem later: plugins, Termux:Widget shortcuts, Termux settings and boot scripts. */
+    private val STARTUP_DIRS = listOf("extensions", ".shortcuts", ".termux", ".termux/boot")
+
+    /**
+     * Code that runs as AntiGem later (plugins, shortcuts, shell start files): never reachable by a mini app, whatever it
+     * was granted ("all files" and folders declared in the manifest too), so a folder grant can't plant something that
+     * runs on the next start.
+     */
+    private fun isStartupPath(home: File, f: File): Boolean {
+        if (STARTUP_DIRS.any { within(f, File(home, it).canonicalFile) }) return true
+        return STARTUP_FILES.any { f.path == File(home, it).canonicalPath }
     }
 
     /** A folder declared in the manifest (not "all files", not picked) that lies in a hidden home folder: it may open that part of it. */

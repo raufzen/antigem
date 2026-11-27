@@ -54,6 +54,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.util.lerp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import ai.antigem.data.voice.AgyVoiceCall
 import ai.antigem.data.voice.AgyVoicePreferences
 import ai.antigem.data.voice.AgyVoicePreview
@@ -61,8 +64,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sin
+import ai.antigem.i18n.L
 
 private fun rgbColor(v: Int) = Color(0xFF000000.toInt() or v)
+
+/** On the half-shown neighbour pages (one instance: the pages recompose every frame while a sample plays). */
+private val HiddenFromTalkBack = Modifier.clearAndSetSemantics { }
 
 /**
  * The voice picker (as in the Antigravity desktop app): one big orb per voice; swipe to hear each one, then use it.
@@ -71,8 +78,8 @@ private fun rgbColor(v: Int) = Color(0xFF000000.toInt() or v)
 @Composable
 fun AgyVoicePickerDialog(
     initialVoice: String,
-    actionLabel: (String) -> String = { "Use $it" },
-    subtitle: String = "Swipe to hear each voice. You can change it during a call too.",
+    actionLabel: (String) -> String = { L.voice.agyVoicePicker.useValue(it) },
+    subtitle: String = L.voice.agyVoicePicker.swipeToHearEachVoiceYou,
     onChoose: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -121,11 +128,11 @@ private fun PickerContent(
     ) {
         Column(Modifier.fillMaxSize().systemBarsPadding().padding(vertical = 12.dp)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, "Close", tint = Color.White.copy(alpha = 0.8f)) }
+                IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, L.common.close, tint = Color.White.copy(alpha = 0.8f)) }
             }
             Text(
-                "Choose a voice", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
+                L.voice.agyVoicePicker.chooseAVoice, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().semantics { heading() }
             )
             Spacer(Modifier.height(6.dp))
             Text(
@@ -148,7 +155,9 @@ private fun PickerContent(
                             val s = lerp(1f, 0.78f, offset)
                             scaleX = s; scaleY = s
                             alpha = lerp(1f, 0.45f, offset)
-                        },
+                        }
+                            // the half-shown neighbours: TalkBack reads only the voice in the middle (the arrows move)
+                            .then(if (page == pager.currentPage) Modifier else HiddenFromTalkBack),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
@@ -169,7 +178,7 @@ private fun PickerContent(
                                 if (loading == v.name) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp, color = Color.White)
                                 else Icon(Icons.Rounded.Replay, null, tint = Color.White, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text(if (speaking) "Playing…" else "Play again", color = Color.White, fontSize = 13.sp)
+                                Text(if (speaking) L.voice.agyVoicePicker.playing else L.voice.agyVoicePicker.playAgain, color = Color.White, fontSize = 13.sp)
                             }
                         }
                     }
@@ -179,11 +188,11 @@ private fun PickerContent(
                     IconButton(
                         onClick = { scope.launch { pager.animateScrollToPage((pager.currentPage - 1).coerceAtLeast(0)) } },
                         enabled = pager.currentPage > 0
-                    ) { Icon(Icons.Rounded.ChevronLeft, "Previous voice", tint = Color.White.copy(alpha = if (pager.currentPage > 0) 0.7f else 0.2f)) }
+                    ) { Icon(Icons.Rounded.ChevronLeft, L.voice.agyVoicePicker.previousVoice, tint = Color.White.copy(alpha = if (pager.currentPage > 0) 0.7f else 0.2f)) }
                     IconButton(
                         onClick = { scope.launch { pager.animateScrollToPage((pager.currentPage + 1).coerceAtMost(voices.lastIndex)) } },
                         enabled = pager.currentPage < voices.lastIndex
-                    ) { Icon(Icons.Rounded.ChevronRight, "Next voice", tint = Color.White.copy(alpha = if (pager.currentPage < voices.lastIndex) 0.7f else 0.2f)) }
+                    ) { Icon(Icons.Rounded.ChevronRight, L.voice.agyVoicePicker.nextVoice, tint = Color.White.copy(alpha = if (pager.currentPage < voices.lastIndex) 0.7f else 0.2f)) }
                 }
             }
 

@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import ai.antigem.data.local.LocalEnvironmentManager
+import ai.antigem.data.local.isAliveCompat
 import ai.antigem.data.preferences.AuthPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
@@ -23,6 +24,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
+import ai.antigem.i18n.L
 
 data class BrowserExtension(
     val id: String,
@@ -41,7 +43,9 @@ data class BrowserExtension(
     val source: PluginSource? = null,
     /** Where the folder lives: [Location.INSTALLED] (ZIP/repository installs), built into the app, or a user folder. */
     val location: Location = Location.INSTALLED,
-    val skills: List<ExtensionSkill> = emptyList()
+    val skills: List<ExtensionSkill> = emptyList(),
+    /** In a home folder and not approved by the user (new there, or its files changed): stays off until approved. */
+    val needsApproval: Boolean = false
 ) {
     enum class Location { INSTALLED, BUNDLED, USER_FOLDER }
 
@@ -52,11 +56,12 @@ data class BrowserExtension(
             toolCount = o.optInt("toolCount"), skillCount = o.optInt("skillCount"), folderName = o.optString("folderName"),
             permissions = o.optJSONArray("permissions")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
             isEnabled = o.optBoolean("isEnabled", true), dirPath = o.optString("dirPath"), iconPath = o.optString("iconPath"),
-            source = o.optJSONObject("source")?.let { PluginSource(it.optString("repo"), it.optString("ref"), it.optString("path")) },
+            source = o.optJSONObject("source")?.let { PluginSource(it.optString("repo"), it.optString("ref"), it.optString("path"), it.optString("commit")) },
             location = when (o.optString("location")) { "bundled" -> Location.BUNDLED; "user_folder" -> Location.USER_FOLDER; else -> Location.INSTALLED },
             skills = o.optJSONArray("skills")?.let { a ->
                 (0 until a.length()).map { i -> a.getJSONObject(i).let { ExtensionSkill(it.optString("name"), it.optString("title"), it.optString("description"), it.optString("path"), it.optString("detailDir").ifBlank { null }) } }
-            }.orEmpty()
+            }.orEmpty(),
+            needsApproval = o.optBoolean("needsApproval", false)
         )
     }
 
@@ -77,13 +82,14 @@ data class BrowserExtension(
 }
 
 /** Written as `.antigem-source.json` into plugins installed from a repository, so updates can be found later. */
-data class PluginSource(val repo: String, val ref: String, val path: String) {
+data class PluginSource(val repo: String, val ref: String, val path: String, val commit: String = "") {
     fun toJson(): JSONObject = JSONObject().put("repo", repo).put("ref", ref).put("path", path)
+        .apply { if (commit.isNotBlank()) put("commit", commit) }
 
     companion object {
         const val FILE = ".antigem-source.json"
         fun read(dir: File): PluginSource? = runCatching {
-            JSONObject(File(dir, FILE).readText()).let { PluginSource(it.getString("repo"), it.optString("ref"), it.getString("path")) }
+            JSONObject(File(dir, FILE).readText()).let { PluginSource(it.getString("repo"), it.optString("ref"), it.getString("path"), it.optString("commit")) }
         }.getOrNull()
     }
 }
@@ -130,14 +136,37 @@ class BrowserExtensionManager private constructor() {
     fun runtimeFile(context: Context) = File(context.filesDir, "browser-runtime/extension-host.mjs")
     fun hostPort() = ai.antigem.data.remote.AndroidLocalBridgeServer.DEFAULT_PORT + 100
 
-    private fun deviceId() = appContext?.let { android.provider.Settings.Secure.getString(it.contentResolver, android.provider.Settings.Secure.ANDROID_ID) }.orEmpty()
+    private fun deviceId() = appContext?.let { ai.antigem.data.remote.LocalServerAuth.key(it) }.orEmpty()
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        // after the app's screen is up (a toast with nobody showing toasts yet is lost)
+        scope.launch { delay(8000); noteSharedStoragePlugins(context.applicationContext) }
         scope.launch {
             runCatching { ensureHost() }.onFailure { lastError = it.message; Log.e(TAG, "Extension host failed", it) }
             loadExtensions()
+            // the plugins of the home folders load only through the IDE bridge's list (it knows which ones the user
+            // approved): once it answers, load the approved, switched-on ones
+            repeat(90) {
+                if (runCatching { PluginBridge.list() }.isSuccess) {
+                    runCatching { refreshExtensions() }.onFailure { lastError = it.message; Log.w(TAG, "Loading plugins failed", it) }
+                    return@launch
+                }
+                delay(2000)
+            }
         }
+    }
+
+    /** Once: plugins left in /sdcard/antiGem/extensions (no longer a plugin folder) must be installed again. */
+    private fun noteSharedStoragePlugins(context: Context) {
+        val prefs = context.getSharedPreferences("browser_extensions", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("sdcard_plugins_noted", false)) return
+        val left = runCatching {
+            File("/sdcard/antiGem/extensions").listFiles().orEmpty().any { it.isDirectory && File(it, "manifest.json").isFile }
+        }.getOrDefault(false)
+        if (left) ai.antigem.ui.components.AppToastHelper.showToast(L.browser.extensionManager.pluginsInSdcardAntigemExtensionsNo,
+            ai.antigem.ui.components.ChatToastType.INFO)
+        prefs.edit().putBoolean("sdcard_plugins_noted", true).apply()
     }
 
     private fun copyAssets(context: Context, source: String, destination: File) {
@@ -192,17 +221,17 @@ class BrowserExtensionManager private constructor() {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 throw IllegalStateException(e.message ?: "The browser-plugin host could not start on the server", e)
             }
-        } else if (hostProcess?.isAlive != true) {
+        } else if (hostProcess?.isAliveCompat != true) {
             val node = File(LocalEnvironmentManager.getBinDir(context), "node")
             if (!node.canExecute()) throw IllegalStateException("Node.js is required in the local terminal to run browser extensions")
+            // the local server key goes in the environment (AGY_DEVICE_ID), never on the command line
             val command = mutableListOf(node.absolutePath, "--experimental-vm-modules", runtimeFile(context).absolutePath,
                 "--serve", "--port", hostPort().toString(), "--root", File(context.filesDir, "browser-extensions").absolutePath,
-                "--device-id", deviceId(), "--bridge-url", "http://127.0.0.1:${ai.antigem.data.remote.AndroidLocalBridgeServer.instance.boundPort}")
-            getExtensionsDirectories(context).filter { it != File(context.filesDir, "browser-extensions") }.forEach {
-                if (it.isDirectory) command.addAll(listOf("--extra-root", it.absolutePath))
-            }
+                "--bridge-url", "http://127.0.0.1:${ai.antigem.data.remote.AndroidLocalBridgeServer.instance.boundPort}")
+            // only the built-in plugins (--root) load as a whole at start; ~/extensions' plugins load one by one after
+            // approval ([init] → refreshExtensions)
             val builder = ProcessBuilder(command).directory(LocalEnvironmentManager.getHomeDir(context)).redirectErrorStream(true)
-            builder.environment().putAll(mapOf("HOME" to LocalEnvironmentManager.getHomeDir(context).absolutePath,
+            builder.environment().putAll(mapOf("AGY_DEVICE_ID" to deviceId(), "HOME" to LocalEnvironmentManager.getHomeDir(context).absolutePath,
                 "PREFIX" to LocalEnvironmentManager.getPrefixDir(context).absolutePath,
                 "PATH" to "${LocalEnvironmentManager.getBinDir(context).absolutePath}:/system/bin",
                 "TMPDIR" to LocalEnvironmentManager.getTmpDir(context).absolutePath,
@@ -233,17 +262,36 @@ class BrowserExtensionManager private constructor() {
         }
         repeat(80) {
             if (runCatching { JSONObject(hostRequest("/health")).optBoolean("ready") }.getOrDefault(false)) { lastError = null; return@withLock }
-            if (!AuthPreferences.currentRemoteMode && hostProcess?.isAlive != true) {
+            if (!AuthPreferences.currentRemoteMode && hostProcess?.isAliveCompat != true) {
                 delay(150) // let the reader coroutine capture the final output and exit code
                 val tail = synchronized(hostTail) { hostTail.takeLast(8).joinToString("\n") }
                 val logPath = File(LocalEnvironmentManager.getHomeDir(context), "extension-host.log").absolutePath
                 throw IllegalStateException("Extension host exited" + (hostProcess?.let { p -> runCatching { " (code ${p.exitValue()})" }.getOrDefault("") } ?: "") +
-                    (if (tail.isNotBlank()) ":\n$tail" else "; no output") + "\nFull log: $logPath")
+                    (if (tail.isNotBlank()) ":\n$tail" else L.browser.extensionManager.noOutput) + "\nFull log: $logPath")
             }
             delay(100)
         }
         throw IllegalStateException("Extension host did not start in time")
     } }
+
+    /**
+     * Starts the plugin host again when it runs, so it gets the current local server key (it is given the key at start).
+     * Remote mode: the server's host no longer answers the new key, so [ensureHost] starts it again there.
+     */
+    fun restartHost() {
+        if (!isHostRunning()) return
+        scope.launch {
+            hostMutex.withLock {
+                hostProcess?.let { process ->
+                    process.destroy()
+                    repeat(30) { if (process.isAliveCompat) delay(100) } // the new host needs the port
+                }
+                hostProcess = null
+            }
+            runCatching { ensureHost() }.onFailure { lastError = it.message; Log.e(TAG, "Extension host failed", it) }
+            runCatching { loadExtensions() }
+        }
+    }
 
     suspend fun request(path: String, body: JSONObject = JSONObject()) = withContext(Dispatchers.IO) {
         ensureHost()
@@ -266,7 +314,7 @@ class BrowserExtensionManager private constructor() {
         request("/tab/prepare", JSONObject().put("nativeId", tab.id))
     }
 
-    fun isHostRunning() = if (AuthPreferences.currentRemoteMode) ai.antigem.data.remote.RemoteServerManager.extensionHostReady else hostProcess?.isAlive == true
+    fun isHostRunning() = if (AuthPreferences.currentRemoteMode) ai.antigem.data.remote.RemoteServerManager.extensionHostReady else hostProcess?.isAliveCompat == true
 
     /**
      * Closes the host's DevTools session for [tab] (Google sign-in must load without one), then runs
@@ -293,20 +341,23 @@ class BrowserExtensionManager private constructor() {
         }
     }
 
+    /**
+     * The plugin folders: ~/extensions (every install goes there) and the app's built-in plugins. No folder in shared
+     * storage (/sdcard/antiGem/extensions): any app with storage access could put a plugin there.
+     */
     fun getExtensionsDirectories(context: Context): List<File> {
         val list = mutableListOf<File>()
         try {
-            val homeDir = LocalEnvironmentManager.getHomeDir(context)
-            list.add(File(homeDir, "extensions"))
-            list.add(File(LocalEnvironmentManager.getProjectsDir(context), "antiGem/extensions"))
+            list.add(File(LocalEnvironmentManager.getHomeDir(context), "extensions"))
         } catch (_: Exception) {}
-
-        list.add(File(context.filesDir, "extensions"))
         list.add(File(context.filesDir, "browser-extensions"))
-        val extStorage = File("/sdcard/antiGem/extensions")
-        if (extStorage.exists()) list.add(extStorage)
         return list.distinctBy { it.absolutePath }
     }
+
+    /** ~/extensions, whose plugins run only once the user approved their files (the IDE bridge keeps the approvals). */
+    private fun approvalRoots(context: Context): Set<String> = runCatching {
+        setOf(File(LocalEnvironmentManager.getHomeDir(context), "extensions").absolutePath)
+    }.getOrDefault(emptySet())
 
     private fun getDisabledExtensionIds(extDir: File): Set<String> = runCatching {
         val arr = JSONObject(File(extDir, "extensions.json").readText()).optJSONArray("disabled") ?: JSONArray()
@@ -321,8 +372,11 @@ class BrowserExtensionManager private constructor() {
         val ctx = appContext ?: return emptyList()
         val loaded = mutableListOf<BrowserExtension>()
         val seenIds = mutableSetOf<String>()
+        val needApproval = approvalRoots(ctx)
         for (baseDir in getExtensionsDirectories(ctx)) {
             val disabled = getDisabledExtensionIds(baseDir)
+            // without the bridge nobody can tell whether the user approved them: off for now
+            val unknown = baseDir.absolutePath in needApproval
             for (sub in baseDir.listFiles().orEmpty().sortedBy { it.name }) {
                 if (!sub.isDirectory || sub.name.startsWith(".") || !File(sub, "manifest.json").isFile) continue
                 runCatching {
@@ -335,11 +389,11 @@ class BrowserExtensionManager private constructor() {
                         description = manifest.optString("description"), toolCount = manifest.optJSONArray("mcp_tools")?.length() ?: 0,
                         skillCount = skills.size, folderName = sub.name,
                         permissions = manifest.optJSONArray("permissions")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
-                        isEnabled = id !in disabled, dirPath = sub.absolutePath, iconPath = PluginIcons.resolve(sub, manifest),
-                        source = PluginSource.read(sub), skills = skills,
+                        isEnabled = id !in disabled && !unknown, dirPath = sub.absolutePath, iconPath = PluginIcons.resolve(sub, manifest),
+                        source = PluginSource.read(sub), skills = skills, needsApproval = unknown,
                         location = when (baseDir.absolutePath) {
                             File(ctx.filesDir, "browser-extensions").absolutePath -> BrowserExtension.Location.BUNDLED
-                            File(LocalEnvironmentManager.getHomeDir(ctx), "extensions").absolutePath, File(ctx.filesDir, "extensions").absolutePath -> BrowserExtension.Location.INSTALLED
+                            File(LocalEnvironmentManager.getHomeDir(ctx), "extensions").absolutePath -> BrowserExtension.Location.INSTALLED
                             else -> BrowserExtension.Location.USER_FOLDER
                         }
                     )
@@ -356,6 +410,8 @@ class BrowserExtensionManager private constructor() {
             withContext(Dispatchers.IO) { scanLocal() }
         }
         withContext(Dispatchers.Main) { extensions.clear(); extensions.addAll(list) }
+        // the plugin host drives tabs through DevTools while any plugin is on
+        WebDebug.set("plugins", list.any { it.isEnabled })
         return list
     }
 
@@ -375,9 +431,30 @@ class BrowserExtensionManager private constructor() {
         lastError = null
     } }
 
-    suspend fun setEnabled(id: String, enable: Boolean) = withContext(Dispatchers.IO) { extensionMutex.withLock {
+    /**
+     * A plugin of a home folder that isn't approved (new there, or its files changed): asks the user on screen and, when
+     * they agree, approves its current files through the IDE bridge. False when they didn't (it stays off).
+     */
+    private suspend fun approveIfNeeded(id: String): Boolean {
+        val extension = loadExtensions().firstOrNull { it.id == id } ?: error("Extension not found")
+        if (!extension.needsApproval) return true
+        val context = appContext ?: error("Extension manager is not initialized")
+        val ok = ai.antigem.data.security.UserConfirm.ask(context, L.browser.extensionManager.turnOnName(extension.name),
+            L.browser.extensionManager.nameIsInFolderAndYou(extension.name, File(extension.dirPath).parent.orEmpty()),
+            L.browser.extensionManager.turnOn)
+        if (ok) PluginBridge.approve(id)
+        return ok
+    }
+
+    suspend fun setEnabled(id: String, enable: Boolean) = withContext(Dispatchers.IO) {
+        // asked before taking the lock: the question may wait for the user
+        if (enable && !approveIfNeeded(id)) return@withContext publish()
+        setEnabledLocked(id, enable)
+    }
+
+    private suspend fun setEnabledLocked(id: String, enable: Boolean) = extensionMutex.withLock {
         ensureHost()
-        val extension = extensions.firstOrNull { it.id == id } ?: error("Extension not found")
+        val extension = publish().firstOrNull { it.id == id } ?: error("Extension not found")
         if (enable) hostRequest("/extension/load", JSONObject().put("dir", extension.dirPath))
         else {
             runCatching { hostRequest("/extension/unload", JSONObject().put("id", id)) }
@@ -389,7 +466,7 @@ class BrowserExtensionManager private constructor() {
         }
         PluginBridge.setEnabled(id, enable)
         publish()
-    } }
+    }
 
     private fun unloadIfLoaded(id: String) {
         val live = JSONArray(hostRequest("/extensions"))
@@ -399,16 +476,25 @@ class BrowserExtensionManager private constructor() {
         BrowserAutomationController.release(id)
     }
 
-    suspend fun reload(id: String) = withContext(Dispatchers.IO) { extensionMutex.withLock {
+    suspend fun reload(id: String) = withContext(Dispatchers.IO) {
+        // changed files of a home-folder plugin need the user's OK again before they run
+        if (loadExtensions().firstOrNull { it.id == id }?.needsApproval == true) {
+            extensionMutex.withLock { runCatching { unloadIfLoaded(id) } }
+            if (!approveIfNeeded(id)) return@withContext publish()
+        }
+        reloadLocked(id)
+    }
+
+    private suspend fun reloadLocked(id: String) = extensionMutex.withLock {
         ensureHost()
-        val extension = extensions.firstOrNull { it.id == id } ?: error("Extension not found")
+        val extension = publish().firstOrNull { it.id == id } ?: error("Extension not found")
         if (extension.isEnabled) {
             BrowserAutomationController.release(id)
             unloadIfLoaded(id)
             hostRequest("/extension/load", JSONObject().put("dir", extension.dirPath))
         }
         publish()
-    } }
+    }
 
     /** The manifest inside a plugin ZIP, to spot an already-installed plugin and show versions before installing. */
     suspend fun archiveManifest(uri: android.net.Uri): JSONObject =
@@ -436,8 +522,51 @@ class BrowserExtensionManager private constructor() {
         activate(PluginBridge.draftInstall(projectId, zipPath, folderName.trim(), updateId).plugin, previous)
     } }
 
+    /** The sites the plugin's content scripts run on (its manifest, when its folder is on this phone). */
+    private fun contentScriptSites(p: BrowserExtension): List<String> = runCatching {
+        val manifest = JSONObject(File(p.dirPath, "manifest.json").readText())
+        val scripts = manifest.optJSONArray("content_scripts") ?: return@runCatching emptyList<String>()
+        (0 until scripts.length()).flatMap { i ->
+            val m = scripts.optJSONObject(i)?.optJSONArray("matches") ?: return@flatMap emptyList<String>()
+            (0 until m.length()).map { m.optString(it) }
+        }.filter { it.isNotBlank() }.distinct().take(12)
+    }.getOrDefault(emptyList())
+
     /** Loads a plugin the bridge just placed; if it fails to start, the bridge puts the previous files back. */
     private suspend fun activate(installed: BrowserExtension, previous: BrowserExtension?): BrowserExtension {
+        // every install and update (Settings, a repository, an agent through the developer MCP) says what the plugin
+        // gets and needs the user's OK before it loads: a plugin runs with AntiGem's full access. No: files put back.
+        val ctx = appContext
+        if (ctx != null) {
+            val perms = installed.permissions.joinToString(", ").ifBlank { L.browser.extensionManager.nothingExtra }
+            val message = buildString {
+                append(L.browser.extensionManager.nameVersionRunsCodeWithAntigems(installed.name, installed.version, perms))
+                // what an update changes: permissions it didn't have before
+                if (previous != null) {
+                    val added = installed.permissions.filter { it !in previous.permissions }
+                    if (added.isNotEmpty()) append("\n\n").append(L.browser.extensionManager.newPermissionsPermissions(added.joinToString(", ")))
+                }
+                contentScriptSites(installed).takeIf { it.isNotEmpty() }?.let {
+                    append("\n\n").append(L.browser.extensionManager.runsOnTheseSitesSites(it.joinToString(", ")))
+                }
+                installed.source?.commit?.takeIf { it.isNotBlank() }?.let {
+                    append("\n").append(L.browser.extensionManager.fromCommitCommit("${installed.source.repo}@${it.take(12)}"))
+                }
+            }
+            val ok = ai.antigem.data.security.UserConfirm.ask(
+                ctx,
+                if (previous != null && previous.version != installed.version)
+                    L.browser.extensionManager.updateNameFromFromToTo(installed.name, previous.version, installed.version)
+                else L.browser.extensionManager.installName(installed.name),
+                message,
+                L.common.install
+            )
+            if (!ok) {
+                runCatching { PluginBridge.restore(installed.folderName) }
+                publish()
+                error(L.browser.extensionManager.nameWasNotInstalled(installed.name))
+            }
+        }
         if (previous?.isEnabled == true) unloadIfLoaded(previous.id)
         if (installed.isEnabled) try {
             unloadIfLoaded(installed.id)

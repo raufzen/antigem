@@ -166,6 +166,7 @@ object GlobalContext {
         append("$h Showing things in this chat (paths absolute, no spaces, each on its own line)\n")
         append("- Image: `![caption](/abs/path/pic.png)` · Video: `![caption](/abs/path/clip.mp4)` (plays in the chat)\n")
         append("- File: `[name](/abs/path/file.ext)` (the user taps to open)\n")
+        append("- Live web page / mini app: a ```html_app block runs in the chat (one HTML document). Several files: name each block (```html_app:index.html, ```css:style.css, ```js:js/app.js …); relative links, ES module imports and fetch of those files work. A site on disk: put only the absolute path of its .html file in the block. alert(), confirm(), prompt() and new tabs don't work: show messages inside the page.\n")
         append("Show images, videos and documents you create this way instead of only naming the path.\n\n")
         append("$h Asking the user\n")
         append("Request vague or ambiguous? Don't guess: ask with your question tool (e.g. AskUserQuestion), all at once, with a few options.\n\n")
@@ -187,6 +188,8 @@ object GlobalContext {
         if (_builtInEnabled.value) parts += builtInText()
         // Settings → STEM & diagrams: the extra blocks this chat renders (normal chats only, not Jarvis)
         ai.antigem.data.render.RenderBundle.promptSection(canReadFiles = canReadAppFiles)?.let { parts += it }
+        // Settings → Language → AI replies: sent even with the built-in context off
+        ai.antigem.i18n.LanguageManager.aiReplyContext()?.let { parts += it }
         val own = active().filter { !it.everyMessage }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
@@ -273,6 +276,7 @@ object GlobalContext {
     fun jarvisGuideSection(): String? {
         val parts = mutableListOf<String>()
         if (_builtInEnabled.value) parts += "## AntiGem app context (for you and every chat you start)\n" + builtInText("###")
+        ai.antigem.i18n.LanguageManager.aiReplyContext()?.let { parts += it }
         val own = active().filter { it.forJarvis && !it.everyMessage }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n$JARVIS_PRIORITY\n\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")
@@ -294,6 +298,7 @@ object GlobalContext {
     fun taskBody(): String? {
         val parts = mutableListOf<String>()
         if (_builtInEnabled.value) parts += "[AntiGem app context: from the app, not the user. Follow it for this whole chat.]\n\n" + builtInText()
+        ai.antigem.i18n.LanguageManager.aiReplyContext()?.let { parts += it }
         val own = active().filter { it.forJarvis }
         if (own.isNotEmpty()) parts += "## The user's own instructions\n" + entriesBlock(own)
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n\n")

@@ -4,7 +4,8 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,6 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -28,6 +32,7 @@ import ai.antigem.data.remote.dto.AskQuestionResponseItemDto
 import ai.antigem.domain.model.*
 import ai.antigem.theme.ClaudeTerracotta
 import ai.antigem.theme.QuotaGreen
+import ai.antigem.i18n.L
 
 /** True where the chat shows unanswered questions in the docked question panel; the card then stays compact. */
 val LocalQuestionPanelActive = staticCompositionLocalOf { false }
@@ -64,7 +69,7 @@ fun ChoiceQuestionnaireCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Questionnaire",
+                        text = L.components.choiceQuestionnaireCard.questionnaire,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         color = ai.antigem.theme.AppColors.onBackground
@@ -126,7 +131,7 @@ fun ChoiceQuestionnaireCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Preferences Submitted",
+                        text = L.components.choiceQuestionnaireCard.preferencesSubmitted,
                         fontSize = 13.5.sp,
                         fontWeight = FontWeight.Bold,
                         color = ai.antigem.theme.AppColors.onBackground
@@ -156,7 +161,7 @@ fun ChoiceQuestionnaireCard(
                                 verticalAlignment = Alignment.Top
                             ) {
                                 Text(
-                                    text = "Q:",
+                                    text = L.components.choiceQuestionnaireCard.q,
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = ai.antigem.theme.AppColors.info,
@@ -267,7 +272,7 @@ fun ChoiceQuestionnaireCard(
                         modifier = Modifier.height(32.dp)
                     ) {
                         Text(
-                            text = "Cancel",
+                            text = L.common.cancel,
                             fontSize = 12.5.sp,
                             color = ai.antigem.theme.AppColors.textSecondary
                         )
@@ -291,7 +296,7 @@ fun ChoiceQuestionnaireCard(
                             modifier = Modifier.height(32.dp)
                         ) {
                             Text(
-                                text = "Skip",
+                                text = L.common.skip,
                                 fontSize = 12.5.sp,
                                 color = ai.antigem.theme.AppColors.textSecondary
                             )
@@ -350,7 +355,7 @@ fun ChoiceQuestionnaireCard(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (questionnaire.questions.size > 1) "Submit All" else "Submit",
+                                text = if (questionnaire.questions.size > 1) L.components.choiceQuestionnaireCard.submitAll else L.components.choiceQuestionnaireCard.submit,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -396,7 +401,7 @@ private fun QuestionBlockView(
                 fontSize = 13.5.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = ai.antigem.theme.AppColors.onBackground,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).semantics { heading() }
             )
 
             if (question.isMultiSelect) {
@@ -407,7 +412,7 @@ private fun QuestionBlockView(
                     modifier = Modifier.padding(start = 4.dp)
                 ) {
                     Text(
-                        text = "Multi-select",
+                        text = L.components.choiceQuestionnaireCard.multiSelect,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Medium,
                         color = ai.antigem.theme.AppColors.textSecondary,
@@ -466,7 +471,7 @@ private fun QuestionBlockView(
             val otherIndex = question.options.size + 1
             OptionRow(
                 index = otherIndex,
-                label = "Other (write your answer)",
+                label = L.components.choiceQuestionnaireCard.otherWriteYourAnswer,
                 description = null,
                 isSelected = isOtherChecked,
                 isMultiSelect = question.isMultiSelect,
@@ -489,7 +494,7 @@ private fun QuestionBlockView(
                         onValueChange = onCustomTextChanged,
                         placeholder = {
                             Text(
-                                text = "Type your custom answer here...",
+                                text = L.components.choiceQuestionnaireCard.typeYourCustomAnswerHere,
                                 fontSize = 12.sp,
                                 color = ai.antigem.theme.AppColors.textSecondary
                             )
@@ -530,7 +535,11 @@ private fun OptionRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .clickable { onClick() },
+            // checkbox / radio for TalkBack ("Checked" / "Selected"); same tap and ripple as clickable
+            .then(
+                if (isMultiSelect) Modifier.toggleable(value = isSelected, role = Role.Checkbox, onValueChange = { onClick() })
+                else Modifier.selectable(selected = isSelected, role = Role.RadioButton, onClick = onClick)
+            ),
         shape = RoundedCornerShape(8.dp),
         color = bgColor,
         border = BorderStroke(1.dp, borderColor)
@@ -624,7 +633,7 @@ internal fun formatSelectionsSummary(
             if (!customText.isNullOrBlank()) {
                 optLabels.add("Other: \"$customText\"")
             } else {
-                optLabels.add("Other")
+                optLabels.add(L.components.choiceQuestionnaireCard.other)
             }
         }
 
@@ -658,7 +667,7 @@ private fun parseAnswerSummary(output: String, questionnaire: ChoiceQuestionnair
         val known = questionnaire?.questions.orEmpty()
         for (q in known) {
             val hit = qaPairs.firstOrNull { norm(it.question) == norm(q.prompt) }
-            out += QuestionAnswerSummary(q.prompt.trim(), hit?.answer?.ifBlank { "Selected" } ?: "Skipped")
+            out += QuestionAnswerSummary(q.prompt.trim(), hit?.answer?.ifBlank { L.common.selected } ?: L.components.choiceQuestionnaireCard.skipped)
         }
         // answers to questions the card does not know (an edited question) are still shown
         for (p in qaPairs) if (known.none { norm(it.prompt) == norm(p.question) }) out += p
@@ -681,14 +690,14 @@ private fun parseAnswerSummary(output: String, questionnaire: ChoiceQuestionnair
             }
             if (matchingLine != null) {
                 val ansPart = matchingLine.substringAfter(":").trim()
-                results.add(QuestionAnswerSummary(promptClean, ansPart.ifEmpty { "Selected" }))
+                results.add(QuestionAnswerSummary(promptClean, ansPart.ifEmpty { L.common.selected }))
             } else {
                 val idx = cleanOutput.indexOf(promptClean, ignoreCase = true)
                 if (idx >= 0) {
                     val after = cleanOutput.substring(idx + promptClean.length).trimStart()
                     val afterColon = if (after.startsWith(":")) after.substring(1).trimStart() else after
                     val ans = afterColon.lines().firstOrNull()?.trim() ?: ""
-                    results.add(QuestionAnswerSummary(promptClean, ans.ifEmpty { "Selected" }))
+                    results.add(QuestionAnswerSummary(promptClean, ans.ifEmpty { L.common.selected }))
                 }
             }
         }
@@ -712,8 +721,8 @@ private fun parseAnswerSummary(output: String, questionnaire: ChoiceQuestionnair
     if (results.isEmpty()) {
         results.add(
             QuestionAnswerSummary(
-                question = questionnaire?.questions?.firstOrNull()?.prompt ?: questionnaire?.title ?: "Preferences",
-                answer = output.ifBlank { "Answer submitted" }
+                question = questionnaire?.questions?.firstOrNull()?.prompt ?: questionnaire?.title ?: L.components.choiceQuestionnaireCard.preferences,
+                answer = output.ifBlank { L.components.choiceQuestionnaireCard.answerSubmitted }
             )
         )
     }
@@ -727,9 +736,9 @@ private fun parseAnswerSummary(output: String, questionnaire: ChoiceQuestionnair
 private fun QuestionPanelStatusRow(toolCall: ToolCall, questionnaire: ChoiceQuestionnaire, modifier: Modifier) {
     val waiting = toolCall.status == "AWAITING_CHOICE"
     val (title, tint) = when {
-        waiting -> "Waiting for your answer" to ClaudeTerracotta
-        toolCall.status == "RUNNING" -> "Answer sent" to QuotaGreen
-        else -> "Question dismissed" to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+        waiting -> L.components.choiceQuestionnaireCard.waitingForYourAnswer to ClaudeTerracotta
+        toolCall.status == "RUNNING" -> L.components.choiceQuestionnaireCard.answerSent to QuotaGreen
+        else -> L.components.choiceQuestionnaireCard.questionDismissed to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
     }
     Surface(
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -760,7 +769,7 @@ private fun QuestionPanelStatusRow(toolCall: ToolCall, questionnaire: ChoiceQues
                     Text("+${questionnaire.questions.size - 3} more", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
                 if (waiting) {
-                    Text("Answer in the panel above the message box.", fontSize = 11.5.sp, color = tint, modifier = Modifier.padding(top = 4.dp))
+                    Text(L.components.choiceQuestionnaireCard.answerInThePanelAboveThe, fontSize = 11.5.sp, color = tint, modifier = Modifier.padding(top = 4.dp))
                 }
             }
         }

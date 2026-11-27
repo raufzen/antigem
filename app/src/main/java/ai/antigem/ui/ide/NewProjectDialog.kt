@@ -1,6 +1,8 @@
 package ai.antigem.ui.ide
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -12,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.antigem.i18n.L
 
 data class ProjectTemplate(
     val id: String,
@@ -20,12 +23,12 @@ data class ProjectTemplate(
     val icon: ImageVector
 )
 
-val PROJECT_TEMPLATES = listOf(
-    ProjectTemplate("python", "Python Project", "Main.py with starter code", Icons.Default.Code),
-    ProjectTemplate("node", "Node.js Project", "Index.js & package.json", Icons.Default.Javascript),
-    ProjectTemplate("web", "Web App (HTML/CSS/JS)", "Index.html, style.css, app.js", Icons.Default.Html),
-    ProjectTemplate("cpp", "C++ Project", "Main.cpp with iostream", Icons.Default.Terminal),
-    ProjectTemplate("blank", "Blank Project", "Empty directory with README.md", Icons.Default.FolderOpen)
+val PROJECT_TEMPLATES get() = listOf(
+    ProjectTemplate("python", L.ide.newProject.pythonProject, L.ide.newProject.mainPyWithStarterCode, Icons.Default.Code),
+    ProjectTemplate("node", L.ide.newProject.nodeJsProject, "Index.js & package.json", Icons.Default.Javascript),
+    ProjectTemplate("web", L.ide.newProject.webAppHtmlCssJs, "Index.html, style.css, app.js", Icons.Default.Html),
+    ProjectTemplate("cpp", L.ide.newProject.cProject, L.ide.newProject.mainCppWithIostream, Icons.Default.Terminal),
+    ProjectTemplate("blank", L.ide.newProject.blankProject, L.ide.newProject.emptyDirectoryWithReadmeMd, Icons.Default.FolderOpen)
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -40,7 +43,7 @@ fun NewProjectDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text("Create New Project", style = MaterialTheme.typography.titleLarge)
+            Text(L.ide.newProject.createNewProject, style = MaterialTheme.typography.titleLarge)
         },
         text = {
             Column(
@@ -76,7 +79,7 @@ fun NewProjectDialog(
                             Box(contentAlignment = Alignment.CenterStart) {
                                 if (projectName.isEmpty()) {
                                     Text(
-                                        text = "Project Name (e.g. my-awesome-app)",
+                                        text = L.ide.newProject.projectNameEGMyAwesome,
                                         fontSize = 13.5.sp,
                                         lineHeight = 18.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
@@ -89,7 +92,7 @@ fun NewProjectDialog(
                 }
 
                 Text(
-                    "Choose Template",
+                    L.ide.newProject.chooseTemplate,
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -98,7 +101,7 @@ fun NewProjectDialog(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { selectedTemplate = template.id },
+                            .selectable(selected = selectedTemplate == template.id, role = Role.RadioButton) { selectedTemplate = template.id },
                         shape = RoundedCornerShape(8.dp),
                         color = if (selectedTemplate == template.id) {
                             MaterialTheme.colorScheme.primaryContainer
@@ -161,12 +164,12 @@ fun NewProjectDialog(
                 },
                 enabled = projectName.isNotBlank()
             ) {
-                Text("Create")
+                Text(L.common.create)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(L.common.cancel)
             }
         }
     )

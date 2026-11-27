@@ -39,12 +39,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.antigem.domain.model.AgentKind
 import ai.antigem.ui.agents.AgentSheetHeader
 import ai.antigem.ui.components.ClaudeAccent
+import ai.antigem.i18n.L
 
 /** Color of a permission mode (chip, picker icon). */
 @Composable
@@ -72,6 +75,8 @@ fun permissionModeIcon(mode: String): ImageVector = when (mode) {
 internal fun ClaudePickerSheet(title: String, detail: String, onDismiss: () -> Unit, agent: AgentKind = AgentKind.CLAUDE, content: @Composable ColumnScope.() -> Unit) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        // full height while TalkBack is on (half height as before otherwise)
+        sheetState = ai.antigem.ui.components.rememberSheetStateFullUnderTalkBack(),
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
@@ -102,7 +107,8 @@ internal fun PickerOption(
         shape = RoundedCornerShape(14.dp),
         color = if (selected) color.copy(alpha = 0.08f) else claudeCardColor(),
         border = BorderStroke(if (selected) 1.5.dp else 1.dp, if (selected) color.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f)),
-        modifier = Modifier.fillMaxWidth()
+        // TalkBack: "Selected" / "Not selected" (the check mark alone is only visual)
+        modifier = Modifier.fillMaxWidth().semantics { this.selected = selected }
     ) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -135,7 +141,7 @@ fun ClaudePermissionModeSheet(
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    ClaudePickerSheet("Permission mode", "how Claude asks before acting", onDismiss) {
+    ClaudePickerSheet(L.claude.modeSheets.permissionMode, L.claude.modeSheets.howClaudeAsksBeforeActing, onDismiss) {
         modes.forEach { (value, label) ->
             PickerOption(
                 title = label,
@@ -160,13 +166,13 @@ fun ClaudePermissionModeSheet(
 }
 
 private fun effortDescription(level: String?): String = when (level) {
-    null -> "The model's own default"
-    "minimal" -> "Barely any reasoning, fastest replies"
-    "low" -> "Quick answers with light reasoning"
-    "medium" -> "Balanced speed and depth"
-    "high" -> "Thorough work on hard tasks"
-    "xhigh" -> "Extra depth for complex changes"
-    "max" -> "Most thorough; uses plan limits fastest"
+    null -> L.claude.modeSheets.theModelsOwnDefault
+    "minimal" -> L.claude.modeSheets.barelyAnyReasoningFastestReplies
+    "low" -> L.claude.modeSheets.quickAnswersWithLightReasoning
+    "medium" -> L.claude.modeSheets.balancedSpeedAndDepth
+    "high" -> L.claude.modeSheets.thoroughWorkOnHardTasks
+    "xhigh" -> L.claude.modeSheets.extraDepthForComplexChanges
+    "max" -> L.claude.modeSheets.mostThoroughUsesPlanLimitsFastest
     else -> ""
 }
 
@@ -196,9 +202,9 @@ fun ClaudeEffortSheet(
     // other agents (OpenCode) show the same sheet in their own colour and words
     agent: AgentKind = AgentKind.CLAUDE,
     color: Color = ClaudeAccent,
-    detail: String = "how much work Claude puts into each reply"
+    detail: String = L.claude.modeSheets.howMuchWorkClaudePutsInto
 ) {
-    ClaudePickerSheet("Effort", detail, onDismiss, agent = agent) {
+    ClaudePickerSheet(L.claude.modeSheets.effort, detail, onDismiss, agent = agent) {
         (listOf<String?>(null) + levels).forEachIndexed { index, level ->
             PickerOption(
                 title = effortLabel(level),

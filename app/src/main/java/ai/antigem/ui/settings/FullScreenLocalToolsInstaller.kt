@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -30,6 +31,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -42,6 +52,7 @@ import ai.antigem.data.local.LocalInstallerState
 import ai.antigem.data.local.RootfsMirror
 import ai.antigem.data.preferences.AuthPreferences
 import ai.antigem.theme.*
+import ai.antigem.i18n.L
 
 /** First-launch setup of the local Linux environment (bootstrap / rootfs): pick a source, then watch it install. */
 @Composable
@@ -155,7 +166,7 @@ fun FullScreenLocalToolsInstaller(
             ) {
                 if (canSkipTop) {
                     TextButton(onClick = onSkip, colors = ButtonDefaults.textButtonColors(contentColor = AppColors.textSecondary)) {
-                        Text("Skip", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text(L.common.skip, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                     }
                 }
             }
@@ -197,9 +208,9 @@ fun FullScreenLocalToolsInstaller(
                         is LocalInstallerState.AwaitingConfirmation -> {
                             val info = state.packageInfo
                             InstallerCard {
-                                DetailRow("Release", info.releaseTag)
-                                DetailRow("Architecture", info.arch, ClaudeTerracotta)
-                                DetailRow("Download size", info.sizeFormatted, QuotaGreen)
+                                DetailRow(L.settings.fullScreenLocalToolsInstaller.release, info.releaseTag)
+                                DetailRow(L.settings.fullScreenLocalToolsInstaller.architecture, info.arch, ClaudeTerracotta)
+                                DetailRow(L.settings.fullScreenLocalToolsInstaller.downloadSize, info.sizeFormatted, QuotaGreen)
                                 HorizontalDivider(
                                     modifier = Modifier.padding(vertical = 10.dp),
                                     color = AppColors.border.copy(alpha = 0.5f)
@@ -222,7 +233,7 @@ fun FullScreenLocalToolsInstaller(
 
                         is LocalInstallerState.Success -> InstallerCard(tint = QuotaGreen) {
                             Text(
-                                text = "The terminal, the IDE backend and the Antigravity language server are ready to run.",
+                                text = L.settings.fullScreenLocalToolsInstaller.theTerminalTheIdeBackendAnd,
                                 fontSize = 13.5.sp,
                                 lineHeight = 19.sp,
                                 color = AppColors.onBackground
@@ -234,7 +245,8 @@ fun FullScreenLocalToolsInstaller(
                                 text = state.errorMessage,
                                 fontSize = 13.sp,
                                 lineHeight = 18.sp,
-                                color = AppColors.onBackground
+                                color = AppColors.onBackground,
+                                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                             )
                         }
                     }
@@ -265,34 +277,34 @@ fun FullScreenLocalToolsInstaller(
                         PrimaryButton(
                             text = when (selectedSourceType) {
                                 0 -> "Install (${LocalEnvironmentManager.ROOTFS_SIZE_LABEL})"
-                                1 -> "Install minimal (~33 MB)"
-                                else -> if (selectedFileUri != null) "Install from ZIP" else "Choose a ZIP file"
+                                1 -> L.settings.fullScreenLocalToolsInstaller.installMinimal33Mb
+                                else -> if (selectedFileUri != null) L.settings.fullScreenLocalToolsInstaller.installFromZip else L.settings.fullScreenLocalToolsInstaller.chooseAZipFile
                             },
                             icon = Icons.Default.Download,
                             onClick = { installSelected(fallbackToAuto = false) }
                         )
-                        SecondaryButton("Skip for now", onClick = onSkip)
+                        SecondaryButton(L.settings.fullScreenLocalToolsInstaller.skipForNow, onClick = onSkip)
                     }
 
                     is LocalInstallerState.AwaitingConfirmation -> {
                         PrimaryButton(
-                            text = "Confirm & install",
+                            text = L.settings.fullScreenLocalToolsInstaller.confirmInstall,
                             icon = Icons.Default.Download,
                             onClick = {
                                 LocalEnvironmentManager.launchInstall(context, authPreferences, BootstrapSource.DirectUrl(state.packageInfo.url))
                             }
                         )
-                        SecondaryButton("Change source") { LocalEnvironmentManager.resetState() }
+                        SecondaryButton(L.settings.fullScreenLocalToolsInstaller.changeSource) { LocalEnvironmentManager.resetState() }
                     }
 
-                    is LocalInstallerState.Discovering -> SecondaryButton("Cancel") { LocalEnvironmentManager.resetState() }
+                    is LocalInstallerState.Discovering -> SecondaryButton(L.common.cancel) { LocalEnvironmentManager.resetState() }
 
                     is LocalInstallerState.Downloading,
                     is LocalInstallerState.Extracting,
                     is LocalInstallerState.Configuring,
-                    is LocalInstallerState.Verifying -> SecondaryButton("Continue in background", onClick = onSkip)
+                    is LocalInstallerState.Verifying -> SecondaryButton(L.settings.fullScreenLocalToolsInstaller.continueInBackground, onClick = onSkip)
 
-                    is LocalInstallerState.Success -> PrimaryButton("Get started", Icons.Default.Check, onComplete)
+                    is LocalInstallerState.Success -> PrimaryButton(L.settings.fullScreenLocalToolsInstaller.getStarted, Icons.Default.Check, onComplete)
 
                     is LocalInstallerState.Error -> {
                         val failedMirror = lastMirror
@@ -302,14 +314,14 @@ fun FullScreenLocalToolsInstaller(
                             if (selectedMirror == failedMirror) {
                                 PrimaryButton("Try again (${selectedMirror.label})", Icons.Default.Refresh) { installFull() }
                             } else {
-                                PrimaryButton("Download from ${selectedMirror.label}", Icons.Default.Download) { installFull() }
+                                PrimaryButton(L.settings.fullScreenLocalToolsInstaller.downloadFromLabel(selectedMirror.label), Icons.Default.Download) { installFull() }
                             }
                         } else {
-                            PrimaryButton("Try again", Icons.Default.Refresh) { installSelected(fallbackToAuto = true) }
+                            PrimaryButton(L.common.tryAgain, Icons.Default.Refresh) { installSelected(fallbackToAuto = true) }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            SecondaryButton("Change source", Modifier.weight(1f)) { LocalEnvironmentManager.resetState() }
-                            SecondaryButton("Skip", Modifier.weight(1f), onSkip)
+                            SecondaryButton(L.settings.fullScreenLocalToolsInstaller.changeSource, Modifier.weight(1f)) { LocalEnvironmentManager.resetState() }
+                            SecondaryButton(L.common.skip, Modifier.weight(1f), onSkip)
                         }
                     }
                 }
@@ -350,15 +362,16 @@ private fun UnsupportedDeviceScreen(onContinue: () -> Unit) {
                 }
                 Spacer(modifier = Modifier.height(22.dp))
                 Text(
-                    text = "Not available on this phone",
+                    text = L.settings.fullScreenLocalToolsInstaller.notAvailableOnThisPhone,
                     fontSize = 25.sp,
                     fontWeight = FontWeight.Bold,
                     color = AppColors.onBackground,
-                    textAlign = TextAlign.Center
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.semantics { heading() }
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Your phone has a 32-bit processor. The local Linux environment (terminal, IDE backend and agents running on the phone) needs a 64-bit one, so it can't be installed here.",
+                    text = L.settings.fullScreenLocalToolsInstaller.yourPhoneHasA32Bit,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     color = AppColors.textSecondary,
@@ -367,11 +380,11 @@ private fun UnsupportedDeviceScreen(onContinue: () -> Unit) {
                 )
                 Spacer(modifier = Modifier.height(28.dp))
                 InstallerCard {
-                    Text("You can still use AntiGem", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = AppColors.onBackground)
+                    Text(L.settings.fullScreenLocalToolsInstaller.youCanStillUseAntigem, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = AppColors.onBackground)
                     Spacer(modifier = Modifier.height(10.dp))
                     listOf(
-                        Icons.Outlined.Dns to "Server mode: run the agents on a computer or server and connect to it",
-                        Icons.Outlined.Terminal to "SSH: work in a terminal on another machine"
+                        Icons.Outlined.Dns to L.settings.fullScreenLocalToolsInstaller.serverModeRunTheAgentsOn,
+                        Icons.Outlined.Terminal to L.settings.fullScreenLocalToolsInstaller.sshWorkInATerminalOn
                     ).forEach { (icon, text) ->
                         Row(modifier = Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.Top) {
                             Icon(icon, contentDescription = null, tint = ClaudeTerracotta, modifier = Modifier.size(18.dp))
@@ -391,7 +404,7 @@ private fun UnsupportedDeviceScreen(onContinue: () -> Unit) {
                 Spacer(modifier = Modifier.height(24.dp))
             }
             Column(modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 20.dp)) {
-                PrimaryButton("Continue to AntiGem", icon = null, onClick = onContinue)
+                PrimaryButton(L.settings.fullScreenLocalToolsInstaller.continueToAntigem, icon = null, onClick = onContinue)
             }
         }
     }
@@ -417,37 +430,39 @@ private fun InstallerHero(state: LocalInstallerState, mirrorChoice: Boolean = fa
     Spacer(modifier = Modifier.height(22.dp))
     Text(
         text = when (state) {
-            is LocalInstallerState.Success -> "You're all set"
-            is LocalInstallerState.Error -> "Setup didn't finish"
-            is LocalInstallerState.Idle -> "Set up your Linux environment"
-            is LocalInstallerState.Discovering -> "Finding the latest release"
-            is LocalInstallerState.AwaitingConfirmation -> "Ready to install"
+            is LocalInstallerState.Success -> L.settings.fullScreenLocalToolsInstaller.youreAllSet
+            is LocalInstallerState.Error -> L.settings.fullScreenLocalToolsInstaller.setupDidntFinish
+            is LocalInstallerState.Idle -> L.settings.fullScreenLocalToolsInstaller.setUpYourLinuxEnvironment
+            is LocalInstallerState.Discovering -> L.settings.fullScreenLocalToolsInstaller.findingTheLatestRelease
+            is LocalInstallerState.AwaitingConfirmation -> L.settings.fullScreenLocalToolsInstaller.readyToInstall
             is LocalInstallerState.Downloading,
             is LocalInstallerState.Extracting,
             is LocalInstallerState.Configuring,
-            is LocalInstallerState.Verifying -> "Installing"
+            is LocalInstallerState.Verifying -> L.settings.fullScreenLocalToolsInstaller.installing
         },
         fontSize = 25.sp,
         fontWeight = FontWeight.Bold,
         color = AppColors.onBackground,
-        textAlign = TextAlign.Center
+        textAlign = TextAlign.Center,
+        // changes with each stage (finding, installing, all set, didn't finish): TalkBack reads it out
+        modifier = Modifier.semantics { heading(); liveRegion = LiveRegionMode.Polite }
     )
     Spacer(modifier = Modifier.height(8.dp))
     Text(
         text = when (state) {
-            is LocalInstallerState.Success -> "The shell, core tools and AGY tools are installed."
+            is LocalInstallerState.Success -> L.settings.fullScreenLocalToolsInstaller.theShellCoreToolsAndAgy
             is LocalInstallerState.Error -> if (mirrorChoice && LocalEnvironmentManager.ROOTFS_MIRRORS.size > 1) {
-                "Try again, switch to the other download site, or open its page (↗), download the zip and install it with \"From a ZIP file\"."
+                L.settings.fullScreenLocalToolsInstaller.tryAgainSwitchToTheOther
             } else if (mirrorChoice) {
                 // one download site for this CPU (x86_64: GitHub)
-                "Try again, or open the download page (↗), download the zip and install it with \"From a ZIP file\"."
+                L.settings.fullScreenLocalToolsInstaller.tryAgainOrOpenTheDownload
             } else {
-                "You can try again, or install from a ZIP file instead."
+                L.settings.fullScreenLocalToolsInstaller.youCanTryAgainOrInstall
             }
-            is LocalInstallerState.Idle -> "AntiGem runs its terminal, IDE and agents on a local Linux system. Choose how to install it."
-            is LocalInstallerState.Discovering -> "Checking for the latest verified archive."
-            is LocalInstallerState.AwaitingConfirmation -> "Review the details and confirm."
-            else -> "This takes a few minutes. You can keep using the app meanwhile."
+            is LocalInstallerState.Idle -> L.settings.fullScreenLocalToolsInstaller.antigemRunsItsTerminalIdeAnd
+            is LocalInstallerState.Discovering -> L.settings.fullScreenLocalToolsInstaller.checkingForTheLatestVerifiedArchive
+            is LocalInstallerState.AwaitingConfirmation -> L.settings.fullScreenLocalToolsInstaller.reviewTheDetailsAndConfirm
+            else -> L.settings.fullScreenLocalToolsInstaller.thisTakesAFewMinutesYou
         },
         fontSize = 14.sp,
         lineHeight = 20.sp,
@@ -467,12 +482,12 @@ private fun SourcePicker(
     onPickZip: () -> Unit,
     onOpenChroot: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         SourceOption(
             icon = Icons.Outlined.CloudDownload,
-            title = "Full environment",
+            title = L.settings.fullScreenLocalToolsInstaller.fullEnvironment,
             tag = "Recommended · ${LocalEnvironmentManager.ROOTFS_SIZE_LABEL}",
-            description = "Verified rootfs with the tools and environment preconfigured.",
+            description = L.settings.fullScreenLocalToolsInstaller.verifiedRootfsWithTheToolsAnd,
             selected = selected == 0,
             onClick = { onSelect(0) }
         ) {
@@ -484,25 +499,26 @@ private fun SourcePicker(
         }
         SourceOption(
             icon = Icons.Outlined.Bolt,
-            title = "Minimal",
+            title = L.settings.fullScreenLocalToolsInstaller.minimal,
             tag = "~33 MB",
-            description = "Clean Termux base for ${LocalEnvironmentManager.getBootstrapArch()}: core utilities and the package manager.",
+            description = L.settings.fullScreenLocalToolsInstaller.cleanTermuxBaseForGetbootstraparchCore(LocalEnvironmentManager.getBootstrapArch()),
             selected = selected == 1,
             onClick = { onSelect(1) }
         )
         SourceOption(
             icon = Icons.Outlined.Storage,
-            title = "Ubuntu chroot (root)",
+            title = L.common.ubuntuChrootRoot,
             tag = "Rooted phones · Magisk / KernelSU / APatch",
-            description = "A real Ubuntu instead of AntiGem's built-in environment: apt, glibc, sudo. Opens its own setup: release, location, user, packages, or an install already on this phone.",
+            description = L.settings.fullScreenLocalToolsInstaller.aRealUbuntuInsteadOfAntigems,
             selected = false,
-            onClick = onOpenChroot
+            onClick = onOpenChroot,
+            choice = false
         )
         SourceOption(
             icon = Icons.Outlined.FolderOpen,
-            title = "From a ZIP file",
+            title = L.settings.fullScreenLocalToolsInstaller.fromAZipFile,
             tag = null,
-            description = "A bootstrap backup or custom rootfs on this phone.",
+            description = L.settings.fullScreenLocalToolsInstaller.aBootstrapBackupOrCustomRootfs,
             selected = selected == 2,
             onClick = { onSelect(2) }
         ) {
@@ -513,7 +529,7 @@ private fun SourcePicker(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (selectedFileName != null) "Choose another file" else "Choose file", fontSize = 13.5.sp)
+                        Text(if (selectedFileName != null) L.settings.fullScreenLocalToolsInstaller.chooseAnotherFile else L.settings.fullScreenLocalToolsInstaller.chooseFile, fontSize = 13.5.sp)
                     }
                     if (selectedFileName != null) {
                         Text(
@@ -539,7 +555,7 @@ private fun SourcePicker(
 @Composable
 private fun MirrorChooser(selected: RootfsMirror, onSelect: (RootfsMirror) -> Unit) {
     val uriHandler = LocalUriHandler.current
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().selectableGroup()) {
         LocalEnvironmentManager.ROOTFS_MIRRORS.forEach { mirror ->
             val isSelected = mirror == selected
             Surface(
@@ -547,7 +563,7 @@ private fun MirrorChooser(selected: RootfsMirror, onSelect: (RootfsMirror) -> Un
                 shape = RoundedCornerShape(12.dp),
                 color = if (isSelected) ClaudeTerracotta.copy(alpha = 0.12f) else AppColors.card,
                 border = BorderStroke(1.dp, if (isSelected) ClaudeTerracotta else AppColors.border.copy(alpha = 0.6f)),
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).semantics { this.selected = isSelected; role = Role.RadioButton }
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 12.dp)) {
                     Text(
@@ -565,7 +581,7 @@ private fun MirrorChooser(selected: RootfsMirror, onSelect: (RootfsMirror) -> Un
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.OpenInNew,
-                            contentDescription = "Open the ${mirror.label} download page",
+                            contentDescription = L.settings.fullScreenLocalToolsInstaller.openTheLabelDownloadPage(mirror.label),
                             tint = if (isSelected) ClaudeTerracotta else AppColors.textSecondary,
                             modifier = Modifier.size(16.dp)
                         )
@@ -584,18 +600,27 @@ private fun SourceOption(
     description: String,
     selected: Boolean,
     onClick: () -> Unit,
+    /** One of the choices (a radio button for TalkBack); false: it opens something (a button). */
+    choice: Boolean = true,
     extra: @Composable ColumnScope.() -> Unit = {}
 ) {
     val borderColor by animateColorAsState(
         if (selected) ClaudeTerracotta else AppColors.border.copy(alpha = 0.6f),
         label = "optionBorder"
     )
+    // inside semantics { } the name "selected" is the semantics property, not this parameter
+    val isSelected = selected
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(18.dp),
         color = if (selected) ClaudeTerracotta.copy(alpha = 0.06f) else AppColors.card,
         border = BorderStroke(if (selected) 1.5.dp else 1.dp, borderColor),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().semantics {
+            if (choice) {
+                this.selected = isSelected
+                role = Role.RadioButton
+            } else role = Role.Button
+        }
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.Top) {
@@ -635,7 +660,7 @@ private fun SourceOption(
                     contentAlignment = Alignment.Center
                 ) {
                     if (selected) {
-                        Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.White, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp)) // the card says "selected"
                     }
                 }
             }
@@ -654,7 +679,7 @@ private fun InstallSteps(state: LocalInstallerState) {
         is LocalInstallerState.Verifying -> 3
         else -> 4
     }
-    val titles = listOf("Download", "Unpack files", "Configure shell", "Verify")
+    val titles = listOf(L.common.download, L.settings.fullScreenLocalToolsInstaller.unpackFiles, L.settings.fullScreenLocalToolsInstaller.configureShell, L.settings.fullScreenLocalToolsInstaller.verify)
     InstallerCard {
         titles.forEachIndexed { i, title ->
             StepRow(index = i, title = title, done = i < active, current = i == active, last = i == titles.lastIndex) {
@@ -679,7 +704,7 @@ private fun InstallSteps(state: LocalInstallerState) {
                         StepProgress(state.progressFraction)
                         StepDetail(state.stepDescription)
                     }
-                    is LocalInstallerState.Verifying -> StepDetail("Running: ${state.testName}", mono = true)
+                    is LocalInstallerState.Verifying -> StepDetail(L.settings.fullScreenLocalToolsInstaller.runningTestname(state.testName), mono = true)
                     else -> {}
                 }
             }
@@ -698,9 +723,11 @@ private fun StepRow(
 ) {
     Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // the check / spinner / number: the step's title below says its state instead
             Box(
                 modifier = Modifier
                     .size(26.dp)
+                    .clearAndSetSemantics { }
                     .clip(CircleShape)
                     .background(
                         when {
@@ -737,7 +764,14 @@ private fun StepRow(
                 text = title,
                 fontSize = 14.5.sp,
                 fontWeight = if (current) FontWeight.SemiBold else FontWeight.Medium,
-                color = if (done || current) AppColors.onBackground else AppColors.textSecondary
+                color = if (done || current) AppColors.onBackground else AppColors.textSecondary,
+                modifier = Modifier.semantics {
+                    stateDescription = when {
+                        done -> L.common.done
+                        current -> L.settings.fullScreenLocalToolsInstaller.stepInProgress
+                        else -> L.settings.fullScreenLocalToolsInstaller.stepNotStarted
+                    }
+                }
             )
             if (current) {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -761,7 +795,8 @@ private fun StepProgress(fraction: Float) {
             trackColor = AppColors.fill
         )
         Spacer(modifier = Modifier.width(10.dp))
-        Text("${(fraction * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ClaudeTerracotta)
+        // the bar says it
+        Text("${(fraction * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = ClaudeTerracotta, modifier = Modifier.clearAndSetSemantics { })
     }
 }
 
@@ -792,7 +827,7 @@ private fun InstallerCard(tint: Color? = null, content: @Composable ColumnScope.
 
 @Composable
 private fun DetailRow(label: String, value: String, valueColor: Color = AppColors.onBackground) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).semantics(mergeDescendants = true) { }) {
         Text(label, fontSize = 13.sp, color = AppColors.textSecondary, modifier = Modifier.weight(1f))
         Text(value, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, color = valueColor)
     }
@@ -803,13 +838,13 @@ private fun DetailRow(label: String, value: String, valueColor: Color = AppColor
 private fun DeviceInfoLine() {
     val hw = remember { LocalEnvironmentManager.getDeviceHardwareInfo() }
     val va = when (hw.vaBits) {
-        48 -> "48-bit address space" to QuotaGreen
-        39 -> "39-bit address space" to AppColors.warning
+        48 -> L.settings.fullScreenLocalToolsInstaller.n48BitAddressSpace to QuotaGreen
+        39 -> L.settings.fullScreenLocalToolsInstaller.n39BitAddressSpace to AppColors.warning
         else -> null
     }
     val atomics = when (hw.hasAtomics) {
-        true -> "LSE atomics" to QuotaGreen
-        false -> "no LSE atomics" to AppColors.danger
+        true -> L.settings.fullScreenLocalToolsInstaller.lseAtomics to QuotaGreen
+        false -> L.settings.fullScreenLocalToolsInstaller.noLseAtomics to AppColors.danger
         else -> null
     }
     Row(
@@ -821,7 +856,7 @@ private fun DeviceInfoLine() {
         Spacer(modifier = Modifier.width(6.dp))
         Text(hw.arch, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = AppColors.textSecondary)
         listOfNotNull(va, atomics).forEach { (label, color) ->
-            Text("  ·  ", fontSize = 12.sp, color = AppColors.textSecondary)
+            Text("  ·  ", fontSize = 12.sp, color = AppColors.textSecondary, modifier = Modifier.clearAndSetSemantics { })
             Box(
                 modifier = Modifier
                     .size(6.dp)
@@ -844,11 +879,12 @@ private fun InstallerLog(lines: List<String>, expanded: Boolean, onToggle: () ->
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(10.dp))
-                .clickable(onClick = onToggle)
+                .semantics { stateDescription = if (expanded) L.components.a11y.expanded else L.components.a11y.collapsed }
+                .clickable(role = Role.Button, onClick = onToggle)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(if (expanded) "Hide details" else "Show details", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = AppColors.textSecondary)
+            Text(if (expanded) L.settings.fullScreenLocalToolsInstaller.hideDetails else L.settings.fullScreenLocalToolsInstaller.showDetails, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = AppColors.textSecondary)
             Icon(
                 imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                 contentDescription = null,

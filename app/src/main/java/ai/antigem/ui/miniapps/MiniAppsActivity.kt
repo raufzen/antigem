@@ -46,6 +46,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,6 +67,7 @@ import ai.antigem.theme.isSystemInDarkThemeRobust
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import ai.antigem.i18n.L
 
 /** The Mini Apps drawer: every app in ~/mini-apps as an icon grid. Tap opens, long-press for App info. */
 class MiniAppsActivity : ComponentActivity() {
@@ -137,29 +143,30 @@ private fun MiniAppsScreen(activity: MiniAppsActivity, onBack: () -> Unit) {
     Scaffold(
         topBar = { Column {
             TopAppBar(
-                title = { Text("Mini Apps") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                title = { Text(L.miniapps.activity.miniApps, modifier = Modifier.semantics { heading() }) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, L.common.back) } },
                 actions = {
                     IconButton(onClick = { context.startActivity(android.content.Intent(context, MiniAppStoreActivity::class.java)) }) {
-                        Icon(Icons.Outlined.Storefront, "Get apps")
+                        Icon(Icons.Outlined.Storefront, L.miniapps.activity.getApps)
                     }
-                    IconButton(onClick = {
+                    // on / off is only its colour: TalkBack says it
+                    IconButton(modifier = Modifier.semantics { stateDescription = if (devMode) L.common.on else L.common.off }, onClick = {
                         devMode = !devMode
                         prefs.edit().putBoolean("dev_mode", devMode).apply()
-                        android.widget.Toast.makeText(context, if (devMode) "Developer mode on: development apps run, with developer tools" else "Developer mode off: only installed (signed) apps run", android.widget.Toast.LENGTH_LONG).show()
-                    }) { Icon(Icons.Outlined.Code, "Developer mode", tint = if (devMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
+                        android.widget.Toast.makeText(context, if (devMode) L.miniapps.activity.developerModeOnDevelopmentAppsRun else L.miniapps.activity.developerModeOffOnlyInstalledSigned, android.widget.Toast.LENGTH_LONG).show()
+                    }) { Icon(Icons.Outlined.Code, L.miniapps.activity.developerMode, tint = if (devMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
                     Box {
-                        IconButton(onClick = { installMenu = true }) { Icon(Icons.Outlined.InstallMobile, "Install or update an app (.agapp)") }
+                        IconButton(onClick = { installMenu = true }) { Icon(Icons.Outlined.InstallMobile, L.miniapps.activity.installOrUpdateAnAppAgapp) }
                         androidx.compose.material3.DropdownMenu(expanded = installMenu, onDismissRequest = { installMenu = false }) {
-                            androidx.compose.material3.DropdownMenuItem(text = { Text("Install from a file") }, onClick = {
+                            androidx.compose.material3.DropdownMenuItem(text = { Text(L.miniapps.activity.installFromAFile) }, onClick = {
                                 installMenu = false
                                 activity.pickFile { uri -> if (uri != null) installing = InstallSource.FromUri(uri) }
                             })
-                            androidx.compose.material3.DropdownMenuItem(text = { Text("Install from a link") }, onClick = { installMenu = false; askLink = true })
+                            androidx.compose.material3.DropdownMenuItem(text = { Text(L.miniapps.activity.installFromALink) }, onClick = { installMenu = false; askLink = true })
                         }
                     }
-                    IconButton(onClick = { keyDialog = true }) { Icon(Icons.Outlined.Key, "Developer key") }
-                    IconButton(onClick = { refresh() }) { Icon(Icons.Outlined.Refresh, "Refresh") }
+                    IconButton(onClick = { keyDialog = true }) { Icon(Icons.Outlined.Key, L.miniapps.activity.developerKey) }
+                    IconButton(onClick = { refresh() }) { Icon(Icons.Outlined.Refresh, L.common.refresh) }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
@@ -171,10 +178,10 @@ private fun MiniAppsScreen(activity: MiniAppsActivity, onBack: () -> Unit) {
             ) {
                 androidx.compose.foundation.layout.Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Your developer key isn't backed up", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
-                        Text("If it's lost, the apps you signed can never be updated.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                        Text(L.miniapps.activity.yourDeveloperKeyIsntBackedUp, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                        Text(L.miniapps.activity.ifItsLostTheAppsYou, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
                     }
-                    androidx.compose.material3.TextButton(onClick = { keyStart = "backup"; keyDialog = true }) { Text("Back up") }
+                    androidx.compose.material3.TextButton(onClick = { keyStart = "backup"; keyDialog = true }) { Text(L.miniapps.activity.backUp) }
                 }
             }
         } },
@@ -188,13 +195,13 @@ private fun MiniAppsScreen(activity: MiniAppsActivity, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Icon(Icons.Outlined.Apps, null, Modifier.padding(bottom = 16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("No mini apps yet", style = MaterialTheme.typography.titleMedium)
+                Text(L.miniapps.activity.noMiniAppsYet, style = MaterialTheme.typography.titleMedium)
                 FolderProblems()
                 androidx.compose.material3.Button(onClick = { context.startActivity(android.content.Intent(context, MiniAppStoreActivity::class.java)) }, modifier = Modifier.padding(top = 16.dp)) {
-                    Text("Get apps")
+                    Text(L.miniapps.activity.getApps)
                 }
                 Text(
-                    "Ask an agent to build one, e.g. \"make me a habit tracker mini app\". Apps live in ~/mini-apps/<name>/ (see ~/mini-apps/README.md).",
+                    L.miniapps.activity.askAnAgentToBuildOne,
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 8.dp),
                 )
@@ -211,11 +218,12 @@ private fun MiniAppsScreen(activity: MiniAppsActivity, onBack: () -> Unit) {
                 items(list, key = { it.id }) { app ->
                     Column(
                         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
-                            .combinedClickable(onClick = { MiniAppActivity.launch(context, app.id) }, onLongClick = { info = app })
+                            .combinedClickable(role = Role.Button, onLongClickLabel = L.miniapps.activity.appInfo, onClick = { MiniAppActivity.launch(context, app.id) }, onLongClick = { info = app })
                             .padding(vertical = 12.dp, horizontal = 4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Box(Modifier.alpha(if (!app.signed && !devMode || app.tampered) 0.4f else 1f)) { AppIcon(app, 58) }
+                        // the icon's description is the name, read just below
+                        Box(Modifier.alpha(if (!app.signed && !devMode || app.tampered) 0.4f else 1f).clearAndSetSemantics { }) { AppIcon(app, 58) }
                         Text(app.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
                         Text(
                             when { app.tampered -> "modified"; app.signed -> app.version; else -> "DEV · ${app.version}" },
@@ -229,7 +237,7 @@ private fun MiniAppsScreen(activity: MiniAppsActivity, onBack: () -> Unit) {
     }
     info?.let { app -> AppInfoSheet(app, onDismiss = { info = null; refresh() }, onClearData = {}) }
     installing?.let { src -> androidx.compose.runtime.key(src) { PackageInstaller(src) { installing = null; refresh() } } }
-    if (askLink) AskText("Install from a link", "An https:// link to an .agapp file (a release page download, your server, a cloud drive's direct link).", false, "Download") { url ->
+    if (askLink) AskText(L.miniapps.activity.installFromALink, "An https:// link to an .agapp file (a release page download, your server, a cloud drive's direct link).", false, L.common.download) { url ->
         askLink = false
         if (url != null) installing = InstallSource.FromLink(url)
     }

@@ -21,6 +21,17 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
+import ai.antigem.ui.components.label
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -123,12 +134,169 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import java.io.File
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import ai.antigem.ui.cloud.cloudProjectsSection
+import ai.antigem.ui.components.hiddenWhileOffscreen
+import ai.antigem.i18n.L
 
 enum class ScrollDirection { UP, DOWN }
+
+/**
+ * Keeps the end of the chat on screen while the agent works ([working]): the scroll is requested in the same
+ * composition as the new rows, so it applies in the same layout pass and the end never drops below the screen while a
+ * reply grows. It reads the auto-scroll and dragging flags itself: when they flip (every scroll starts and ends with
+ * them) only this recomposes, not the chat screen.
+ */
+@Composable
+private fun FollowTail(
+    listState: LazyListState,
+    // the rows themselves, not their count: a reply growing inside its last row makes a new list of the same size,
+    // and the end must be pinned again for it
+    rows: List<ChatFeedItem>,
+    working: Boolean,
+    shouldAutoScroll: () -> Boolean,
+    isUserDragging: () -> Boolean
+) {
+    if (rows.isNotEmpty() && working && shouldAutoScroll() && !isUserDragging()) {
+        SideEffect { listState.requestScrollToItem(rows.size) }
+    }
+}
+
+/** How often the chat screen takes message updates while the newest message is off screen (see [pacedMessages]). */
+private const val MESSAGE_PACE_MS = 250L
+
+/**
+ * The messages for the chat screen. While [slow] (no row of the newest message is on screen: the user reads older
+ * messages while a reply may be streaming), updates are passed on at most every [MESSAGE_PACE_MS], always the newest
+ * one: the screen and its list rebuild a few times a second instead of on every streamed word. Passed on at once:
+ * every update when not [slow], the first list, another chat's list, a list that got shorter or emptied (edit,
+ * rewind, reload), and the newest list the moment [slow] ends. Nothing is ever dropped: the last update always
+ * arrives, at most [MESSAGE_PACE_MS] late.
+ */
+private fun pacedMessages(
+    source: kotlinx.coroutines.flow.StateFlow<List<ChatMessage>>,
+    slow: () -> Boolean
+): kotlinx.coroutines.flow.Flow<List<ChatMessage>> = kotlinx.coroutines.flow.channelFlow {
+    var sent: List<ChatMessage>? = null
+    var sentAt = 0L
+    var timer: kotlinx.coroutines.Job? = null
+    suspend fun pass(list: List<ChatMessage>) {
+        sent = list
+        sentAt = android.os.SystemClock.uptimeMillis()
+        send(list)
+    }
+    launch {
+        // the newest message came on screen: what was held back follows at once
+        snapshotFlow { slow() }.collect { isSlow ->
+            if (!isSlow) {
+                timer?.cancel()
+                timer = null
+                val newest = source.value
+                if (newest !== sent) pass(newest)
+            }
+        }
+    }
+    source.collect { list ->
+        val last = sent
+        val urgent = last == null || !slow() || list.isEmpty() || last.isEmpty() || list.size < last.size ||
+            list.first().conversationId != last.first().conversationId
+        val wait = MESSAGE_PACE_MS - (android.os.SystemClock.uptimeMillis() - sentAt)
+        if (urgent || wait <= 0) {
+            timer?.cancel()
+            timer = null
+            pass(list)
+        } else if (timer == null) {
+            timer = launch {
+                delay(wait)
+                timer = null
+                pass(source.value)
+            }
+        }
+    }
+}
+
+/** The index of the first row of the newest message in [rows] (rows.size when no row belongs to a message). */
+private fun firstRowOfNewestMessage(rows: List<ChatFeedItem>): Int {
+    var newest: String? = null
+    var first = rows.size
+    for (i in rows.indices.reversed()) {
+        val id = rows[i].messageIdOrNull() ?: continue
+        if (newest == null) newest = id else if (id != newest) break
+        first = i
+    }
+    return first
+}
+
+/** The message a row belongs to (null for dividers and voice-call markers). */
+private fun ChatFeedItem.messageIdOrNull(): String? = when (this) {
+    is ChatFeedItem.AssistantBlock -> messageId
+    is ChatFeedItem.AssistantThinking -> messageId
+    is ChatFeedItem.AssistantTyping -> messageId
+    is ChatFeedItem.AssistantFooter -> message.id
+    is ChatFeedItem.StreamingMessage -> message.id
+    is ChatFeedItem.User -> message.id
+    is ChatFeedItem.Summary -> message.id
+    is ChatFeedItem.JarvisEvent -> message.id
+    is ChatFeedItem.StepGroup -> steps.firstOrNull()?.messageId
+    else -> null
+}
+
+/**
+ * The floating jump-to-top / jump-to-bottom button. It reads the scroll flags itself (shown, direction, at the top,
+ * at the bottom), so while scrolling only the button redraws when they change, not the chat screen.
+ */
+@Composable
+private fun ChatJumpButton(
+    showScrollButton: () -> Boolean,
+    scrollDirection: () -> ScrollDirection,
+    isAtTop: () -> Boolean,
+    isAtBottom: () -> Boolean,
+    rowCount: Int,
+    modifier: Modifier,
+    onJump: (toTop: Boolean) -> Unit
+) {
+    val showUpArrow = showScrollButton() && scrollDirection() == ScrollDirection.UP && !isAtTop()
+    val showDownArrow = showScrollButton() && scrollDirection() == ScrollDirection.DOWN && !isAtBottom()
+    val isVisible = (showUpArrow || showDownArrow) && rowCount > 2
+
+    androidx.compose.animation.AnimatedVisibility(
+        visible = isVisible,
+        enter = fadeIn() + scaleIn(initialScale = 0.8f),
+        exit = fadeOut() + scaleOut(targetScale = 0.8f),
+        modifier = modifier
+    ) {
+        Surface(
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+                .clickable(role = Role.Button) { onJump(showUpArrow) },
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            shadowElevation = 6.dp,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Icon(
+                    imageVector = if (showUpArrow) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (showUpArrow) L.chat.screen.jumpToTop else L.chat.screen.jumpToBottom,
+                    tint = ClaudeTerracotta,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+    }
+}
 
 
 
@@ -257,7 +425,13 @@ fun ChatScreen(
             ai.antigem.ui.components.AppToastHelper.showToast(it, ai.antigem.ui.components.ChatToastType.INFO)
         }
     }
-    val messages by viewModel.messages.collectAsState()
+    // True while none of the newest message's rows is on screen (the user reads older messages while a reply may be
+    // streaming): the screen then takes message updates a few times a second instead of on every streamed word, so
+    // scrolling through older messages stays smooth (see pacedMessages). Set further down, from the list's layout.
+    val readingOlder = remember { mutableStateOf(false) }
+    val messagesSource = viewModel.messages
+    val messages by remember(messagesSource) { pacedMessages(messagesSource) { readingOlder.value } }
+        .collectAsState(initial = messagesSource.value)
     val artifacts by viewModel.artifacts.collectAsState()
     val selectedModelId by viewModel.selectedModelId.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
@@ -287,6 +461,8 @@ fun ChatScreen(
     val conversationError by viewModel.conversationError.collectAsState()
     val activeInstances by viewModel.activeInstances.collectAsState()
     val isActivelyRunning by viewModel.isCurrentChatActivelyRunning.collectAsState()
+    // TalkBack on: the chat speaks "Reply finished", approvals and questions (ChatTalkBackAnnouncer); off: nothing runs
+    val talkBackOn = ai.antigem.ui.components.rememberTalkBackOn()
     val isBackgroundActive by viewModel.isCurrentChatBackgroundActive.collectAsState()
     val queuedMessages by viewModel.queuedMessages.collectAsState()
     val quotaSummary by viewModel.quotaSummary.collectAsState()
@@ -442,13 +618,13 @@ fun ChatScreen(
     val voiceCall by ai.antigem.data.voice.AgyVoiceCall.state.collectAsState()
     val agyPickedModel by viewModel.agyBackend.selectedModelId.collectAsState()
     val beginVoiceCall: () -> Unit = {
-        val title = currentConv?.title?.takeIf { it.isNotBlank() && it != "New Chat" } ?: "Voice chat"
+        val title = currentConv?.title?.takeIf { it.isNotBlank() && it != "New Chat" } ?: L.chat.screen.voiceChat
         ai.antigem.data.voice.AgyVoiceCall.start(context, title) { viewModel.agyBackend.prepareVoiceCall() }
     }
     val voiceCallPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) beginVoiceCall()
         else ai.antigem.ui.components.AppToastHelper.showToast(
-            "Voice calls need microphone access.", ai.antigem.ui.components.ChatToastType.ERROR
+            L.chat.screen.voiceCallsNeedMicrophoneAccess, ai.antigem.ui.components.ChatToastType.ERROR
         )
     }
     val callWithMicPermission: () -> Unit = {
@@ -464,7 +640,7 @@ fun ChatScreen(
         when {
             voiceCall.active -> ai.antigem.data.voice.AgyVoiceCall.setMinimized(false)
             !systemConnectionState.canSend -> ai.antigem.ui.components.AppToastHelper.showToast(
-                "Start the server to call Antigravity.", ai.antigem.ui.components.ChatToastType.ERROR
+                L.chat.screen.startTheServerToCallAntigravity, ai.antigem.ui.components.ChatToastType.ERROR
             )
             // agy refuses voice calls for cloud chats (its /voice/ws answers 404 for them)
             currentConv?.cloudProjectId != null -> ai.antigem.ui.components.AppToastHelper.showToast(
@@ -477,7 +653,7 @@ fun ChatScreen(
     if (showVoicePicker) {
         ai.antigem.ui.voice.AgyVoicePickerDialog(
             initialVoice = ai.antigem.data.voice.AgyVoicePreferences.voice.value,
-            actionLabel = { "Call with $it" },
+            actionLabel = { L.chat.screen.callWithValue(it) },
             onChoose = { name ->
                 ai.antigem.data.voice.AgyVoicePreferences.setVoice(name)
                 ai.antigem.data.voice.AgyVoicePreferences.setPicked()
@@ -504,7 +680,7 @@ fun ChatScreen(
             when {
                 ai.antigem.data.voice.AgyVoiceCall.state.value.active -> ai.antigem.data.voice.AgyVoiceCall.setMinimized(false)
                 !serverUp -> ai.antigem.ui.components.AppToastHelper.showToast(
-                    "Start the server to call Antigravity.", ai.antigem.ui.components.ChatToastType.ERROR
+                    L.chat.screen.startTheServerToCallAntigravity, ai.antigem.ui.components.ChatToastType.ERROR
                 )
                 else -> {
                     viewModel.openLastCallChat()
@@ -582,11 +758,11 @@ fun ChatScreen(
     val serverRestarting = serverStatus is ai.antigem.data.local.LocalServerStatus.Starting ||
         serverStatus is ai.antigem.data.local.LocalServerStatus.Stopping
     val restartLocalServer = {
-        ai.antigem.ui.components.AppToastHelper.showToast(if (AuthPreferences.currentRemoteMode) "Restarting the server over SSH…" else "Restarting the local server…", ai.antigem.ui.components.ChatToastType.INFO)
+        ai.antigem.ui.components.AppToastHelper.showToast(if (AuthPreferences.currentRemoteMode) L.chat.screen.restartingTheServerOverSsh else L.chat.screen.restartingTheLocalServer, ai.antigem.ui.components.ChatToastType.INFO)
         ai.antigem.data.local.LocalServerManager.restartServer(context)
     }
     val recheckClaude = {
-        ai.antigem.ui.components.AppToastHelper.showToast("Checking Claude Code…", ai.antigem.ui.components.ChatToastType.INFO)
+        ai.antigem.ui.components.AppToastHelper.showToast(L.chat.screen.checkingClaudeCode, ai.antigem.ui.components.ChatToastType.INFO)
         viewModel.claudeAccount.refreshStatus()
     }
     val agyCliInfo by ai.antigem.data.remote.BridgeInfo.agyCli.collectAsState()
@@ -608,7 +784,7 @@ fun ChatScreen(
             onSignIn = { viewModel.loginToAgyHub(force = true) },
             onCheckAuth = { viewModel.checkAgyAuthStatus(userInitiated = true) },
             onRetry = {
-                ai.antigem.ui.components.AppToastHelper.showToast("Reconnecting to Antigravity…", ai.antigem.ui.components.ChatToastType.INFO)
+                ai.antigem.ui.components.AppToastHelper.showToast(L.chat.screen.reconnectingToAntigravity, ai.antigem.ui.components.ChatToastType.INFO)
                 viewModel.retryConnections()
             },
             onRestartServer = restartLocalServer,
@@ -959,14 +1135,52 @@ fun ChatScreen(
     // so another chat (or coming back) starts with every pill closed
     val openStepGroups = remember(currentConv?.id) { mutableStateMapOf<String, Boolean>() }
     val expandedStepGroups = openStepGroups.keys.toSet()
-    val feedItems = remember(messages, selectedModelId, modelNameOf, voiceCallItems, groupAgentSteps, groupStepsMin, expandedStepGroups) {
-        // the date and model dividers are always on
-        val items = ChatFeedCache.buildFeedItems(messages, selectedModelId, dividers = true, modelName = modelNameOf, voiceCalls = voiceCallItems)
-        StepGroups.apply(items, groupAgentSteps, groupStepsMin, expandedStepGroups, messages)
+    val convKey = currentConv?.id ?: "empty"
+
+    // The chat's rows are built off the main thread: parsing replies (a long one again on every update while it
+    // streams, or every message when a big chat opens) never holds up drawing. Updates that come while one is being
+    // built are merged: only the newest is built. The rows arrive with the messages they were made from (FeedSnapshot),
+    // and everything below that compares messages with rows reads that snapshot, so the two never disagree.
+    val feedInput = remember(convKey, messages, selectedModelId, modelNameOf, voiceCallItems) {
+        FeedInput(convKey, messages, selectedModelId, modelNameOf, voiceCallItems)
+    }
+    val latestFeedInput by rememberUpdatedState(feedInput)
+    var builtFeed by remember { mutableStateOf<FeedSnapshot?>(null) }
+    LaunchedEffect(Unit) {
+        snapshotFlow { latestFeedInput }
+            .conflate()
+            .collect { input ->
+                val built = withContext(Dispatchers.Default) {
+                    try {
+                        FeedSnapshot.build(input)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.e("ChatScreen", "Could not build the chat's rows", e)
+                        null
+                    }
+                }
+                if (built != null) builtFeed = built
+            }
+    }
+    // rows built while this chat had no messages yet (the moment it opened) don't count once its messages are here:
+    // the loading view stays until the real rows exist, never an empty list in between
+    val builtForThisChat = builtFeed?.takeIf { it.convKey == convKey && (it.messages.isNotEmpty() || messages.isEmpty()) }
+    // no rows for this chat yet (it was just opened): when every message is parsed already (coming back to it) they
+    // are built right here, so there is never a frame without them; otherwise the loading view shows until they come
+    val instantFeed = remember(feedInput, builtForThisChat == null) {
+        if (builtForThisChat == null && ChatFeedCache.allParsed(messages)) FeedSnapshot.build(feedInput) else null
+    }
+    val feedSnapshot = builtForThisChat ?: instantFeed
+    /** The messages the rows on screen were made from (the live [messages] may be a frame ahead). */
+    val rowMessages = feedSnapshot?.messages ?: emptyList()
+    val feedNotReady = feedSnapshot == null && messages.isNotEmpty()
+    // folding steps into pills parses nothing: done here, so opening or closing a pill is instant
+    val feedItems = remember(feedSnapshot, groupAgentSteps, groupStepsMin, expandedStepGroups) {
+        StepGroups.apply(feedSnapshot?.rows ?: emptyList(), groupAgentSteps, groupStepsMin, expandedStepGroups, rowMessages)
     }
 
     // Fresh LazyListState per conversation — restores saved position if returning, or initializes directly at bottom
-    val convKey = currentConv?.id ?: "empty"
     val hasFeedItems = feedItems.isNotEmpty()
     val initialSavedPos = remember(convKey) { ConversationScrollCache.get(convKey) }
     val listState = remember(convKey, hasFeedItems) {
@@ -983,7 +1197,7 @@ fun ChatScreen(
     }
 
     // Determine whether user is scrolled near the bottom (within the last item)
-    val isAtBottom by remember(listState) {
+    val isAtBottomState = remember(listState) {
         derivedStateOf {
             val layoutInfo = listState.layoutInfo
             val totalItems = layoutInfo.totalItemsCount
@@ -996,6 +1210,24 @@ fun ChatScreen(
                 }
             }
         }
+    }
+    val isAtBottom by isAtBottomState
+
+    // The rows, the list and "at bottom" as they are right now, for actions that run on a tap (opening a link, a Jarvis
+    // card, editing a prompt): read when tapped, so those actions are made once and don't change on every update
+    val linkRows by rememberUpdatedState(feedItems)
+    val linkListState by rememberUpdatedState(listState)
+    val linkAtBottomState by rememberUpdatedState(isAtBottomState)
+    val latestRowMessages by rememberUpdatedState(rowMessages)
+
+    // C: is any row of the newest message on screen? While none is, message updates are paced (see readingOlder)
+    val newestMessageFirstRow = remember(feedItems) { firstRowOfNewestMessage(feedItems) }
+    LaunchedEffect(listState, newestMessageFirstRow) {
+        snapshotFlow {
+            // nothing laid out yet counts as on screen: updates are never held back while a chat opens
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: Int.MAX_VALUE
+            lastVisible < newestMessageFirstRow
+        }.collect { readingOlder.value = it }
     }
 
     val isAtTop by remember(listState) {
@@ -1107,18 +1339,23 @@ fun ChatScreen(
         }
     }
 
-    // Re-enable auto-scroll whenever the user scrolls back to the bottom
-    LaunchedEffect(isAtBottom) {
-        if (isAtBottom) {
-            shouldAutoScroll = true
+    // Re-enable auto-scroll whenever the user scrolls back to the bottom. Watched as a flow, not read by the screen:
+    // a flag read here would rebuild the whole screen each time it flips while scrolling
+    LaunchedEffect(listState) {
+        snapshotFlow { isAtBottomState.value }.collect { atBottom ->
+            if (atBottom) {
+                shouldAutoScroll = true
+            }
         }
     }
 
-    // Hide scroll button after scroll stops
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (!listState.isScrollInProgress && showScrollButton) {
-            delay(4000)
-            showScrollButton = false
+    // Hide scroll button after scroll stops (a new scroll cancels the wait, as before)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collectLatest { scrolling ->
+            if (!scrolling && showScrollButton) {
+                delay(4000)
+                showScrollButton = false
+            }
         }
     }
 
@@ -1144,16 +1381,29 @@ fun ChatScreen(
     }
 
 
-    // Scroll to bottom when user explicitly sends a message (instant)
+    // Scroll to bottom when user explicitly sends a message (instant), and once more when the rows hold the prompt
+    // just sent (they are built off the main thread, so it may come a frame later); given up after a few seconds
+    var promptsAtSend by remember(convKey) { mutableStateOf(-1) }
     LaunchedEffect(userSentMessageTrigger) {
-        if (userSentMessageTrigger > 0 && feedItems.isNotEmpty()) {
+        if (userSentMessageTrigger > 0) {
             shouldAutoScroll = true
+            promptsAtSend = rowMessages.count { it.role == ai.antigem.domain.model.MessageRole.USER }
+            if (feedItems.isNotEmpty()) listState.scrollToItem(feedItems.size)
+            delay(3_000)
+            promptsAtSend = -1
+        }
+    }
+    LaunchedEffect(feedSnapshot) {
+        val before = promptsAtSend
+        if (before >= 0 && feedItems.isNotEmpty() &&
+            rowMessages.count { it.role == ai.antigem.domain.model.MessageRole.USER } > before) {
+            promptsAtSend = -1
             listState.scrollToItem(feedItems.size)
         }
     }
 
     // Smart auto-scroll during streaming & tool execution: follows live stream and tool calls smoothly without getting stuck
-    val lastMsg = messages.lastOrNull()
+    val lastMsg = rowMessages.lastOrNull()
     val lastToolCalls = lastMsg?.toolCalls.orEmpty()
     val isRunningOrStreaming = isActivelyRunning || (lastMsg?.isStreaming == true)
 
@@ -1185,10 +1435,13 @@ fun ChatScreen(
 
     // Applied in the same layout pass as the new content (not a frame later), so the end of the chat (the working
     // row) never drops below the screen while the reply grows: the output grows above it
-    val followTail = feedItems.isNotEmpty() && (isRunningOrStreaming || tailFinishing) && shouldAutoScroll && !isUserDragging
-    if (followTail) {
-        SideEffect { listState.requestScrollToItem(feedItems.size) }
-    }
+    FollowTail(
+        listState = listState,
+        rows = feedItems,
+        working = isRunningOrStreaming || tailFinishing,
+        shouldAutoScroll = { shouldAutoScroll },
+        isUserDragging = { isUserDragging }
+    )
 
     // The Claude Code-style working row: under the reply for as long as the agent works, but not while it waits for
     // the user (an approval or a question)
@@ -1200,9 +1453,9 @@ fun ChatScreen(
         claudeModelList.find { it.id == selectedModelId } ?: AiModel(
             id = selectedModelId.ifBlank { "default" },
             displayName = when {
-                claudeModelsRefreshing -> "Loading models…"
-                claudeModelsError != null -> "Models unavailable"
-                else -> "Choose model"
+                claudeModelsRefreshing -> L.chat.screen.loadingModels
+                claudeModelsError != null -> L.chat.screen.modelsUnavailable
+                else -> L.chat.screen.chooseModel
             },
             family = ai.antigem.domain.model.ModelFamily.CLAUDE
         )
@@ -1210,20 +1463,20 @@ fun ChatScreen(
         enabledModels.find { it.id == selectedModelId } ?: AiModel(
             id = selectedModelId.ifBlank { "default" },
             displayName = when {
-                isRefreshingModels -> "Loading models…"
-                openCodeModelsError != null -> "No models"
+                isRefreshingModels -> L.chat.screen.loadingModels
+                openCodeModelsError != null -> L.chat.screen.noModels
                 selectedModelId.isNotBlank() -> selectedModelId.substringAfter('/')
-                else -> "Choose model"
+                else -> L.chat.screen.chooseModel
             }
         )
     } else if (isCodexChat) {
         enabledModels.find { it.id == selectedModelId } ?: AiModel(
             id = selectedModelId.ifBlank { "default" },
             displayName = when {
-                isRefreshingModels -> "Loading models…"
-                codexModelsError != null -> "No models"
+                isRefreshingModels -> L.chat.screen.loadingModels
+                codexModelsError != null -> L.chat.screen.noModels
                 selectedModelId.isNotBlank() -> selectedModelId
-                else -> "Choose model"
+                else -> L.chat.screen.chooseModel
             },
             family = ai.antigem.domain.model.ModelFamily.OTHER
         )
@@ -1257,15 +1510,18 @@ fun ChatScreen(
     }
 
     /** Opens a chat Jarvis points at (a task of its team) and keeps the way back to the Jarvis chat. */
-    val openJarvisLinkedChat: (String) -> Unit = { targetId ->
-        val currentId = currentConv?.id
-        if (!currentId.isNullOrBlank() && !currentId.equals(targetId, ignoreCase = true)) {
-            if (feedItems.isNotEmpty()) {
-                ConversationScrollCache.save(currentId, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, isAtBottom)
+    // made once (it goes to the Jarvis cards in the list): reads the chat, rows and scroll position when tapped
+    val openJarvisLinkedChat: (String) -> Unit = remember(viewModel, conversationBackStack) {
+        { targetId ->
+            val currentId = currentConv?.id
+            if (!currentId.isNullOrBlank() && !currentId.equals(targetId, ignoreCase = true)) {
+                if (linkRows.isNotEmpty()) {
+                    ConversationScrollCache.save(currentId, linkListState.firstVisibleItemIndex, linkListState.firstVisibleItemScrollOffset, linkAtBottomState.value)
+                }
+                conversationBackStack.add(currentId)
             }
-            conversationBackStack.add(currentId)
+            viewModel.selectConversation(targetId)
         }
-        viewModel.selectConversation(targetId)
     }
     val navigateBackConversation: () -> Unit = {
         while (conversationBackStack.isNotEmpty()) {
@@ -1315,7 +1571,11 @@ fun ChatScreen(
         }
     )
 
-    val fileLinkHandler = remember(scope, conversations, currentConv?.id, listState, feedItems.size, isAtBottom) {
+    // What the link handler needs, as it is when a link is tapped. The handler itself is made once: it goes to every
+    // row through a static composition local, so a new one rebuilt the whole screen (it was made again whenever
+    // "at bottom" flipped, a row was added or the chat list refreshed, which made scrolling and streaming stutter)
+    val linkFileOpener by rememberUpdatedState(fileLinkOpener)
+    val fileLinkHandler = remember(scope) {
         FileLinkHandler(
             onOpenFile = { rawUrl ->
                 try {
@@ -1333,7 +1593,7 @@ fun ChatScreen(
                             activeMarkdownDoc = cleanPath to content
                         }
                     } else {
-                        fileLinkOpener.open(cleanPath)
+                        linkFileOpener.open(cleanPath)
                     }
                 } catch (e: Exception) {
                     Log.e("ChatScreen", "Error opening file link $rawUrl", e)
@@ -1350,8 +1610,8 @@ fun ChatScreen(
                 if (target != null) {
                     val currentId = currentConv?.id
                     if (!currentId.isNullOrBlank() && !currentId.equals(target.id, ignoreCase = true)) {
-                        if (feedItems.isNotEmpty()) {
-                            ConversationScrollCache.save(currentId, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, isAtBottom)
+                        if (linkRows.isNotEmpty()) {
+                            ConversationScrollCache.save(currentId, linkListState.firstVisibleItemIndex, linkListState.firstVisibleItemScrollOffset, linkAtBottomState.value)
                         }
                         conversationBackStack.add(currentId)
                     }
@@ -1360,7 +1620,7 @@ fun ChatScreen(
                         scope.launch { drawerState.close() }
                     }
                 } else {
-                    android.widget.Toast.makeText(context, "This conversation doesn't exist", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(context, L.chat.screen.thisConversationDoesntExist, android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -1399,6 +1659,8 @@ fun ChatScreen(
         Box(modifier = Modifier.fillMaxSize()) {
             ModalNavigationDrawer(
                 drawerState = drawerState,
+                // while the artifacts panel or fullscreen floating terminal is open over it, keep TalkBack & D-pad focus out of the chat behind it
+                modifier = Modifier.hiddenWhileOffscreen(!showArtifactsDrawer && !(showLocalTerminalDialog && isInFloatingWindow)),
         drawerContent = {
             ChatHistoryDrawer(
                 conversations = conversations,
@@ -1523,7 +1785,7 @@ fun ChatScreen(
                 onDismissRequest = { viewModel.clearPendingLoginUrl() },
                 title = {
                     Text(
-                        text = "Sign In with Browser",
+                        text = L.chat.screen.signInWithBrowser,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
@@ -1531,24 +1793,21 @@ fun ChatScreen(
                 text = {
                     Column {
                         Text(
-                            text = "Antigravity requires Google authentication to access Gemini models.",
+                            text = L.chat.screen.antigravityRequiresGoogleAuthentication,
                             fontSize = 13.5.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         if (!remoteSignIn) {
                             Text(
-                                text = "Do you want to open your browser to log in now?",
+                                text = L.chat.screen.doYouWantToOpenYour,
                                 fontSize = 13.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         } else {
                             Text(
-                                text = "1. Open the browser and sign in.\n" +
-                                    "2. Your browser then shows an error page for localhost. That is expected: the sign-in " +
-                                    "finishes on the server, not on this phone.\n" +
-                                    "3. Copy that page's address from the address bar and paste it below.",
+                                text = L.chat.screen.n1OpenTheBrowserAndSign,
                                 fontSize = 13.sp,
                                 lineHeight = 18.sp,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -1578,12 +1837,12 @@ fun ChatScreen(
                             Button(
                                 onClick = {
                                     callbackBusy = true
-                                    callbackStatus = "Sending to the server…"
+                                    callbackStatus = L.chat.screen.sendingToTheServer
                                     viewModel.forwardLoginCallback(pastedCallback) { result ->
                                         callbackBusy = false
                                         result.fold(
                                             {
-                                                callbackStatus = "✓ Sent. Finishing sign-in…"
+                                                callbackStatus = L.chat.screen.sentFinishingSignIn
                                                 viewModel.clearPendingLoginUrl()
                                             },
                                             { callbackStatus = "✗ ${it.message}" }
@@ -1593,7 +1852,7 @@ fun ChatScreen(
                                 enabled = pastedCallback.isNotBlank() && !callbackBusy,
                                 colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
                             ) {
-                                Text("Finish", fontWeight = FontWeight.SemiBold)
+                                Text(L.chat.screen.finish, fontWeight = FontWeight.SemiBold)
                             }
                         }
                         Button(
@@ -1611,13 +1870,13 @@ fun ChatScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
                         ) {
-                            Text("Open Browser", fontWeight = FontWeight.SemiBold)
+                            Text(L.chat.screen.openBrowser, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { viewModel.clearPendingLoginUrl() }) {
-                        Text("Cancel")
+                        Text(L.common.cancel)
                     }
                 }
             )
@@ -1628,7 +1887,7 @@ fun ChatScreen(
                 onDismissRequest = { viewModel.clearAgyLoginIssue() },
                 title = {
                     Text(
-                        text = if (verifyUrl != null) "Account Verification Required" else "Can't sign in to Antigravity",
+                        text = if (verifyUrl != null) L.chat.screen.accountVerificationRequired else L.chat.screen.cantSignInToAntigravity,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
@@ -1656,21 +1915,21 @@ fun ChatScreen(
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
                         ) {
-                            Text("Verify Account", fontWeight = FontWeight.SemiBold)
+                            Text(L.chat.screen.verifyAccount, fontWeight = FontWeight.SemiBold)
                         }
                     } else {
                         Button(
                             onClick = { viewModel.clearAgyLoginIssue() },
                             colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
                         ) {
-                            Text("OK", fontWeight = FontWeight.SemiBold)
+                            Text(L.common.ok, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 },
                 dismissButton = if (verifyUrl != null) {
                     {
                         TextButton(onClick = { viewModel.clearAgyLoginIssue() }) {
-                            Text("Cancel")
+                            Text(L.common.cancel)
                         }
                     }
                 } else null
@@ -1711,7 +1970,7 @@ fun ChatScreen(
                             val activeTitle = currentConv?.title?.takeIf {
                                 it.isNotBlank() && it != "New Chat" && it != "Conversation"
                             }
-                            listTitle ?: activeTitle ?: currentConv?.title?.takeIf { it.isNotBlank() } ?: "Antigravity Chat"
+                            listTitle ?: activeTitle ?: currentConv?.title?.takeIf { it.isNotBlank() } ?: L.chat.screen.antigravityChat
                         }
 
                         val isChatStarted = messages.isNotEmpty()
@@ -1719,12 +1978,12 @@ fun ChatScreen(
                             val convUri = currentConv?.workspaceUri
                             if (currentConv?.isCloud == true) {
                                 // an Antigravity cloud chat: its cloud project
-                                "☁ " + (ai.antigem.data.agent.agy.AgyCloud.projectName(currentConv?.cloudProjectId) ?: "Cloud")
+                                "☁ " + (ai.antigem.data.agent.agy.AgyCloud.projectName(currentConv?.cloudProjectId) ?: L.chat.screen.cloud)
                             } else if (!convUri.isNullOrBlank()) {
                                 val clean = convUri.removePrefix("file://").trimEnd('/')
-                                File(clean).name.ifBlank { "Workspace" }
+                                File(clean).name.ifBlank { L.common.workspace }
                             } else {
-                                if (isChatStarted) "Outside" else "Select Project"
+                                if (isChatStarted) L.chat.screen.outside else L.chat.screen.selectProject
                             }
                         }
                         val showStatusDot = isLocalToolsInstalled || AuthPreferences.currentRemoteMode ||
@@ -1740,6 +1999,9 @@ fun ChatScreen(
                         ) {
                             // long-press the title: this chat on the home screen (an icon, or a widget)
                             var titleMenuOpen by remember { mutableStateOf(false) }
+                            // same rule as the long-press below: TalkBack offers it as its long-press action
+                            val titleConv = currentConv
+                            val canPinTitle = titleConv != null && isChatStarted && !titleConv.readOnly && !isInFloatingWindow
                             Box(Modifier.weight(1f)) {
                             // the real title fades in when the chat gets one (instead of jumping from "New Chat")
                             Crossfade(
@@ -1751,6 +2013,9 @@ fun ChatScreen(
                                         val conv = currentConv
                                         if (conv != null && isChatStarted && !conv.readOnly && !isInFloatingWindow) titleMenuOpen = true
                                     })
+                                }.semantics(mergeDescendants = true) {
+                                    heading()
+                                    if (canPinTitle) onLongClick(label = L.common.addToHomeScreen) { titleMenuOpen = true; true }
                                 }
                             ) { chatTitle ->
                                 Text(
@@ -1764,31 +2029,11 @@ fun ChatScreen(
                             }
                             DropdownMenu(expanded = titleMenuOpen, onDismissRequest = { titleMenuOpen = false }) {
                                 DropdownMenuItem(
-                                    text = { Text("Add to home screen") },
+                                    text = { Text(L.common.addToHomeScreen) },
                                     leadingIcon = { Icon(Icons.Outlined.AppShortcut, null, modifier = Modifier.size(18.dp)) },
                                     onClick = {
                                         titleMenuOpen = false
                                         currentConv?.let { ai.antigem.data.homescreen.HomeShortcuts.pinChat(context, it.id, it.agent, displayedChatTitle) }
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Add as a widget") },
-                                    leadingIcon = { Icon(Icons.Outlined.Widgets, null, modifier = Modifier.size(18.dp)) },
-                                    onClick = {
-                                        titleMenuOpen = false
-                                        val conv = currentConv
-                                        if (conv != null) {
-                                            if (ai.antigem.ui.homescreen.HomeWidgets.canPin(context)) {
-                                                ai.antigem.ui.homescreen.HomeWidgets.pin(
-                                                    context, ai.antigem.ui.homescreen.WidgetKind.CHAT, Triple(conv.id, conv.agent, displayedChatTitle)
-                                                )
-                                            } else {
-                                                ai.antigem.ui.components.AppToastHelper.showToast(
-                                                    "Long-press your home screen → Widgets → AntiGem → One chat",
-                                                    ai.antigem.ui.components.ChatToastType.INFO
-                                                )
-                                            }
-                                        }
                                     }
                                 )
                             }
@@ -1801,10 +2046,16 @@ fun ChatScreen(
                                         .widthIn(max = 150.dp)
                                         .clip(RoundedCornerShape(50))
                                         .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                                        .clickable {
-                                            if (!isChatStarted) showProjectPickerDialog = true
-                                            else if (showStatusDot) statusMenuOpen = true
-                                        }
+                                        // nothing to open (chat started, no status dot): plain text for TalkBack, not a "disabled" button
+                                        .then(
+                                            if (!isChatStarted || showStatusDot) Modifier.clickable(
+                                                role = Role.Button,
+                                                onClickLabel = if (!isChatStarted) L.chat.screen.chooseProject else L.components.a11y.agentsStatus
+                                            ) {
+                                                if (!isChatStarted) showProjectPickerDialog = true
+                                                else statusMenuOpen = true
+                                            } else Modifier
+                                        )
                                         .padding(start = if (showStatusDot) 4.dp else 10.dp, end = if (isChatStarted) 10.dp else 4.dp, top = 3.dp, bottom = 3.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -1816,7 +2067,12 @@ fun ChatScreen(
                                             modifier = Modifier
                                                 .size(20.dp)
                                                 .clip(CircleShape)
-                                                .clickable { statusMenuOpen = true },
+                                                .clickable(role = Role.Button) { statusMenuOpen = true }
+                                                .semantics {
+                                                    contentDescription = L.components.a11y.agentStatusValue(
+                                                        agentEntries.joinToString { "${it.agent.label()}: ${it.label}" }
+                                                    )
+                                                },
                                             contentAlignment = Alignment.Center
                                         ) {
                                             ai.antigem.ui.agents.AgentStatusDot(
@@ -1833,12 +2089,12 @@ fun ChatScreen(
                                             modifier = Modifier
                                                 .size(20.dp)
                                                 .clip(CircleShape)
-                                                .clickable { screenAwakeInfoOpen = true },
+                                                .clickable(role = Role.Button) { screenAwakeInfoOpen = true },
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
                                                 imageVector = Icons.Rounded.LightMode,
-                                                contentDescription = "Screen stays on",
+                                                contentDescription = L.chat.screen.screenStaysOn,
                                                 tint = ai.antigem.theme.AppColors.warning,
                                                 modifier = Modifier.size(13.dp)
                                             )
@@ -1860,7 +2116,7 @@ fun ChatScreen(
                                                         )
                                                         Spacer(modifier = Modifier.width(6.dp))
                                                         Text(
-                                                            text = "Screen stays on",
+                                                            text = L.chat.screen.screenStaysOn,
                                                             fontSize = 14.sp,
                                                             fontWeight = FontWeight.SemiBold,
                                                             color = MaterialTheme.colorScheme.onSurface
@@ -1868,7 +2124,7 @@ fun ChatScreen(
                                                     }
                                                     Spacer(modifier = Modifier.height(6.dp))
                                                     Text(
-                                                        text = "The screen won't turn off by itself while:",
+                                                        text = L.chat.screen.theScreenWontTurnOffBy,
                                                         fontSize = 12.5.sp,
                                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                                                     )
@@ -1882,7 +2138,7 @@ fun ChatScreen(
                                                     }
                                                     Spacer(modifier = Modifier.height(6.dp))
                                                     Text(
-                                                        text = "It turns off normally again once this is done.",
+                                                        text = L.chat.screen.itTurnsOffNormallyAgainOnce,
                                                         fontSize = 12.sp,
                                                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
                                                     )
@@ -1903,7 +2159,7 @@ fun ChatScreen(
                                     if (!isChatStarted) {
                                         Icon(
                                             imageVector = Icons.Default.ArrowDropDown,
-                                            contentDescription = "Choose project",
+                                            contentDescription = null,
                                             modifier = Modifier.size(16.dp),
                                             tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                                         )
@@ -1936,7 +2192,7 @@ fun ChatScreen(
                                     modifier = Modifier
                                         .size(34.dp)
                                         .clip(CircleShape)
-                                        .clickable {
+                                        .clickable(role = Role.Button) {
                                             when (id) {
                                                 "newchat" -> {
                                                     // same as the sidebar's New chat
@@ -1972,7 +2228,7 @@ fun ChatScreen(
                                     // a command running: a ring around the Run icon
                                     if (id == "run" && anyRunGoing) {
                                         CircularProgressIndicator(
-                                            modifier = Modifier.size(30.dp),
+                                            modifier = Modifier.size(30.dp).clearAndSetSemantics { },
                                             strokeWidth = 2.dp,
                                             color = ClaudeTerracotta
                                         )
@@ -1988,13 +2244,13 @@ fun ChatScreen(
                                             else -> Icons.Outlined.AddComment
                                         },
                                         contentDescription = when (id) {
-                                            "ide" -> "Open IDE"
-                                            "terminal" -> "Open Terminal"
-                                            "browser" -> "Open Browser"
-                                            "notes" -> "Open Notes"
-                                            "files" -> "Open Files"
-                                            "run" -> if (anyRunGoing) "Run (a command is running)" else "Open Run panel"
-                                            else -> "New chat"
+                                            "ide" -> L.chat.screen.openIde
+                                            "terminal" -> L.chat.screen.openTerminal
+                                            "browser" -> L.chat.screen.openBrowser
+                                            "notes" -> L.chat.screen.openNotes
+                                            "files" -> L.chat.screen.openFiles
+                                            "run" -> if (anyRunGoing) L.chat.screen.runACommandIsRunning else L.chat.screen.openRunPanel
+                                            else -> L.chat.screen.newChat
                                         },
                                         tint = if (id == "run" && anyRunGoing) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
                                         modifier = Modifier.size(19.dp)
@@ -2008,7 +2264,7 @@ fun ChatScreen(
                             IconButton(onClick = navigateBackConversation) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back",
+                                    contentDescription = L.common.back,
                                     tint = MaterialTheme.colorScheme.onSurface
                                 )
                             }
@@ -2016,7 +2272,7 @@ fun ChatScreen(
                             IconButton(onClick = { scope.launch { drawerState.open() } }) {
                                 Icon(
                                     imageVector = Icons.Default.Menu,
-                                    contentDescription = "Open Drawer",
+                                    contentDescription = L.chat.screen.openDrawer,
                                     tint = MaterialTheme.colorScheme.onSurface
                                 )
                             }
@@ -2028,14 +2284,14 @@ fun ChatScreen(
                             IconButton(onClick = onMinimizeWindow) {
                                 Icon(
                                     imageVector = Icons.Default.Remove,
-                                    contentDescription = "Minimize to Bubble",
+                                    contentDescription = L.chat.screen.minimizeToBubble,
                                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
                                 )
                             }
                             IconButton(onClick = onOpenFullScreen) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
-                                    contentDescription = "Open Full Screen",
+                                    contentDescription = L.chat.screen.openFullScreen,
                                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
                                 )
                             }
@@ -2044,7 +2300,7 @@ fun ChatScreen(
                             IconButton(onClick = { showChatTelemetryDialog = true }) {
                                 Icon(
                                     imageVector = Icons.Outlined.Analytics,
-                                    contentDescription = "Chat Telemetry & Tokens",
+                                    contentDescription = L.chat.screen.chatTelemetryTokens,
                                     tint = ClaudeTerracotta
                                 )
                             }
@@ -2087,7 +2343,9 @@ fun ChatScreen(
                     // agy missing: the hub's "agy is not installed" error is also this chat's error, and an existing chat
                     // never finishes loading. Both step aside for the empty view's "not installed" card with Install.
                     val agyMissingHere = isAgyChat && agyNotInstalled
-                    val isExistingChat = messages.isEmpty() && isExistingConversation && isLoadingConversation && !agyMissingHere
+                    val isExistingChat = (messages.isEmpty() && isExistingConversation && isLoadingConversation && !agyMissingHere) ||
+                        // the messages are here but their rows are still being built (a big chat just opened)
+                        feedNotReady
                     Log.d("CHAT_OPEN_DEBUG", "🖥️ [ChatScreen Render] convId=${currentConv?.id}, title='${currentConv?.title}', isLoading=$isLoadingConversation, isExisting=$isExistingChat, msgCount=${messages.size}, error=$conversationError, isServerStopped=$isServerStopped")
 
                     if (isAgyChat && isServerStopped && messages.isEmpty()) {
@@ -2162,15 +2420,16 @@ fun ChatScreen(
                             )
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "Unable to Load Chat",
+                                text = L.chat.screen.unableToLoadChat,
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.semantics { heading() }
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             SelectionContainer {
                                 Text(
-                                    text = conversationError ?: "Failed to load conversation messages.",
+                                    text = conversationError ?: L.chat.screen.failedToLoadConversationMessages,
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f),
                                     textAlign = TextAlign.Center,
@@ -2195,7 +2454,7 @@ fun ChatScreen(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Retry", fontSize = 13.5.sp)
+                                Text(L.common.retry, fontSize = 13.5.sp)
                             }
                         }
                     } else if (isExistingChat) {
@@ -2245,46 +2504,46 @@ fun ChatScreen(
                                     ai.antigem.ui.agents.AgentSetupPrompt(
                                         agent = ai.antigem.domain.model.AgentKind.OPENCODE,
                                         title = when (openCodeState) {
-                                            ai.antigem.data.agent.opencode.OpenCodeState.CHECKING -> "Starting OpenCode…"
-                                            ai.antigem.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> "OpenCode is not installed"
-                                            else -> "OpenCode is unavailable"
+                                            ai.antigem.data.agent.opencode.OpenCodeState.CHECKING -> L.chat.screen.startingOpencode
+                                            ai.antigem.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> L.chat.screen.opencodeIsNotInstalled
+                                            else -> L.chat.screen.opencodeIsUnavailable
                                         },
                                         message = if (openCodeState == ai.antigem.data.agent.opencode.OpenCodeState.CHECKING)
-                                            "Waiting for the server to come up. This takes a few seconds after the app opens."
+                                            L.chat.screen.waitingForTheServerToCome
                                         else openCodeEntry?.detail ?: openCodeState.label,
                                         statusColor = openCodeEntry?.color,
                                         actionLabel = openCodeEntry?.action?.label,
                                         onAction = { openCodeEntry?.action?.onClick?.invoke() },
-                                        secondaryLabel = if (openCodeState == ai.antigem.data.agent.opencode.OpenCodeState.CHECKING) null else "Server logs",
+                                        secondaryLabel = if (openCodeState == ai.antigem.data.agent.opencode.OpenCodeState.CHECKING) null else L.common.serverLogs,
                                         onSecondary = { showLocalServerOutputDialog = true }
                                     )
                                 } else if (isCodexChat && codexState != ai.antigem.data.agent.codex.CodexState.READY) {
                                     ai.antigem.ui.agents.AgentSetupPrompt(
                                         agent = ai.antigem.domain.model.AgentKind.CODEX,
                                         title = when (codexState) {
-                                            ai.antigem.data.agent.codex.CodexState.CHECKING -> "Starting Codex…"
-                                            ai.antigem.data.agent.codex.CodexState.NOT_INSTALLED -> "Codex is not installed"
-                                            ai.antigem.data.agent.codex.CodexState.SIGNED_OUT -> "Sign in to Codex"
-                                            else -> "Codex is unavailable"
+                                            ai.antigem.data.agent.codex.CodexState.CHECKING -> L.chat.screen.startingCodex
+                                            ai.antigem.data.agent.codex.CodexState.NOT_INSTALLED -> L.chat.screen.codexIsNotInstalled
+                                            ai.antigem.data.agent.codex.CodexState.SIGNED_OUT -> L.chat.screen.signInToCodex
+                                            else -> L.chat.screen.codexIsUnavailable
                                         },
                                         message = if (codexState == ai.antigem.data.agent.codex.CodexState.CHECKING)
-                                            "Waiting for the server to come up. This takes a few seconds after the app opens."
+                                            L.chat.screen.waitingForTheServerToCome
                                         else codexEntry?.detail ?: codexState.label,
                                         statusColor = codexEntry?.color,
                                         actionLabel = codexEntry?.action?.label,
                                         onAction = { codexEntry?.action?.onClick?.invoke() },
-                                        secondaryLabel = if (codexState == ai.antigem.data.agent.codex.CodexState.CHECKING) null else "Server logs",
+                                        secondaryLabel = if (codexState == ai.antigem.data.agent.codex.CodexState.CHECKING) null else L.common.serverLogs,
                                         onSecondary = { showLocalServerOutputDialog = true }
                                     )
                                 } else if (isAgyChat && agyNotInstalled) {
                                     ai.antigem.ui.agents.AgentSetupPrompt(
                                         agent = ai.antigem.domain.model.AgentKind.AGY,
-                                        title = "Antigravity is not installed",
-                                        message = agyEntry?.detail ?: "Antigravity (agy) is not installed yet.",
+                                        title = L.chat.screen.antigravityIsNotInstalled,
+                                        message = agyEntry?.detail ?: L.chat.screen.antigravityAgyIsNotInstalledYet,
                                         statusColor = agyEntry?.color,
                                         actionLabel = agyEntry?.action?.label,
                                         onAction = { agyEntry?.action?.onClick?.invoke() },
-                                        secondaryLabel = "Server logs",
+                                        secondaryLabel = L.common.serverLogs,
                                         onSecondary = { showLocalServerOutputDialog = true }
                                     )
                                 } else when (if (isClaudeChat || isOpenCodeChat || isCodexChat) null else systemConnectionState.status) {
@@ -2304,15 +2563,16 @@ fun ChatScreen(
                                         }
                                     } else {
                                         Text(
-                                            text = "How can I help you today?",
+                                            text = L.chat.screen.howCanIHelpYouToday,
                                             fontSize = 22.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface,
-                                            textAlign = TextAlign.Center
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.semantics { heading() }
                                         )
                                         Spacer(modifier = Modifier.height(8.dp))
                                         Text(
-                                            text = "Ask a question, brainstorm ideas, or start coding",
+                                            text = L.chat.screen.askAQuestionBrainstormIdeasOr,
                                             fontSize = 14.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
                                             textAlign = TextAlign.Center
@@ -2385,14 +2645,17 @@ fun ChatScreen(
                                             onOpenChat = openJarvisLinkedChat
                                         )
                                         is ChatFeedItem.User -> {
-                                            val msgIndex = messages.indexOfFirst { it.id == feedItem.message.id }
-                                            val willDeleteOutput = msgIndex < messages.lastIndex
                                             UserMessageBubble(
                                                 message = feedItem.message,
                                                 isLastUserMessage = true,
                                                 isDevModeEnabled = isDevModeEnabled,
                                                 canEdit = !isReadOnlyChat,
                                                 onEdit = { targetMsg ->
+                                                    // asks first when replies follow this prompt (editing deletes them):
+                                                    // judged on the messages on screen when tapped, so the row doesn't
+                                                    // depend on the message list (it changes on every streamed word)
+                                                    val rows = latestRowMessages
+                                                    val willDeleteOutput = rows.indexOfFirst { it.id == feedItem.message.id } < rows.lastIndex
                                                     if (willDeleteOutput) {
                                                         pendingMessageAction = PendingMessageAction(MessageActionType.EDIT, targetMsg)
                                                     } else {
@@ -2520,6 +2783,8 @@ fun ChatScreen(
                                             ai.antigem.ui.components.AgentWorkingSpinner(
                                                 color = if (isClaudeChat) ai.antigem.ui.components.ClaudeAccent else if (isOpenCodeChat) ai.antigem.ui.components.OpenCodeAccent else if (isCodexChat) ai.antigem.ui.components.CodexAccent else ai.antigem.ui.components.AgyAccent,
                                                 compacting = isClaudeChat && claudeCompacting,
+                                                // "Clauding" only in Claude chats
+                                                claude = isClaudeChat,
                                                 // leaves in the frame the reply's footer arrives, which fades in in its place
                                                 modifier = Modifier.animateItem(fadeInSpec = tween(180), placementSpec = null, fadeOutSpec = null)
                                             )
@@ -2534,52 +2799,28 @@ fun ChatScreen(
                         }
                     }
 
-                    // Floating Scroll Up / Scroll Down Button (Instant Movement)
-                    val showUpArrow = showScrollButton && scrollDirection == ScrollDirection.UP && !isAtTop
-                    val showDownArrow = showScrollButton && scrollDirection == ScrollDirection.DOWN && !isAtBottom
-                    val isVisible = (showUpArrow || showDownArrow) && feedItems.size > 2
-                                            
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = isVisible,
-                        enter = fadeIn() + scaleIn(initialScale = 0.8f),
-                        exit = fadeOut() + scaleOut(targetScale = 0.8f),
+                    // Floating Scroll Up / Scroll Down Button (Instant Movement). It reads the scroll flags itself, so only
+                    // the button redraws when they change, not this whole area (see ChatJumpButton)
+                    ChatJumpButton(
+                        showScrollButton = { showScrollButton },
+                        scrollDirection = { scrollDirection },
+                        isAtTop = { isAtTop },
+                        isAtBottom = { isAtBottom },
+                        rowCount = feedItems.size,
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(end = 16.dp, bottom = 12.dp)
-                    ) {
-                        Surface(
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(CircleShape)
-                                .clickable {
-                                    showScrollButton = false
-                                    scope.launch {
-                                        if (showUpArrow) {
-                                            listState.scrollToItem(0)
-                                        } else {
-                                            listState.scrollToItem(feedItems.size)
-                                        }
-                                    }
-                                },
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 6.dp,
-                            shadowElevation = 6.dp,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
-                        ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                Icon(
-                                    imageVector = if (showUpArrow) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                    contentDescription = if (showUpArrow) "Jump to Top" else "Jump to Bottom",
-                                    tint = ClaudeTerracotta,
-                                    modifier = Modifier.size(22.dp)
-                                )
+                            .padding(end = 16.dp, bottom = 12.dp),
+                        onJump = { toTop ->
+                            showScrollButton = false
+                            scope.launch {
+                                if (toTop) {
+                                    listState.scrollToItem(0)
+                                } else {
+                                    listState.scrollToItem(feedItems.size)
+                                }
                             }
                         }
-                    }
+                    )
 
                     // Floating Slash Commands & Skills Autocomplete Suggestions
                     val slash = slashTrigger
@@ -2700,7 +2941,7 @@ fun ChatScreen(
                             .padding(horizontal = 14.dp, vertical = 6.dp)
                     ) {
                         Surface(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().semantics { paneTitle = L.common.files },
                             shape = RoundedCornerShape(12.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant,
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
@@ -2717,7 +2958,7 @@ fun ChatScreen(
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clickable {
+                                            .clickable(role = Role.Button) {
                                                 val newText = inputState.text.substring(0, atIndex) + "@${file.path} "
                                                 inputState.setTextAndPlaceCursorAtEnd(newText)
                                             }
@@ -2726,7 +2967,7 @@ fun ChatScreen(
                                     ) {
                                         Icon(
                                             imageVector = if (file.isDir) Icons.Default.Folder else Icons.Default.Description,
-                                            contentDescription = null,
+                                            contentDescription = if (file.isDir) L.files.fileKinds.folder else null,
                                             tint = ClaudeTerracotta,
                                             modifier = Modifier.size(16.dp)
                                         )
@@ -2781,7 +3022,8 @@ fun ChatScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Medium
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                             )
                         }
                     }
@@ -2827,12 +3069,13 @@ fun ChatScreen(
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (isReconnecting) "Connecting to Antigravity..." else "Antigravity Disconnected",
+                                    text = if (isReconnecting) L.chat.screen.connectingToAntigravity else L.chat.screen.antigravityDisconnected,
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.Medium,
                                     color = if (isReconnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onErrorContainer,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
                                 )
                             }
                             if (!isReconnecting) {
@@ -2848,7 +3091,7 @@ fun ChatScreen(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "Reconnect",
+                                        text = L.common.reconnect,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.error
@@ -2910,6 +3153,15 @@ fun ChatScreen(
                     ai.antigem.ui.agents.findPendingQuestion(
                         currentConv?.agent ?: ai.antigem.domain.model.AgentKind.AGY,
                         messages
+                    )
+                }
+                if (talkBackOn) {
+                    ChatTalkBackAnnouncer(
+                        chatKey = currentConv?.id,
+                        running = isActivelyRunning,
+                        needsApproval = approvalItems.isNotEmpty(),
+                        hasQuestion = pendingQuestion != null,
+                        error = conversationError
                     )
                 }
                 AnimatedVisibility(
@@ -2980,7 +3232,7 @@ fun ChatScreen(
                         onProject = { showCloudProjects = true },
                         onPreview = {
                             if (messages.isEmpty()) ai.antigem.ui.components.AppToastHelper.showToast(
-                                "Send the cloud agent a message first: its VM starts with the chat.", ai.antigem.ui.components.ChatToastType.INFO
+                                L.chat.screen.sendTheCloudAgentAMessage, ai.antigem.ui.components.ChatToastType.INFO
                             ) else showCloudPreview = true
                         },
                         onRunCommand = { showCloudRunCommand = true }
@@ -2998,19 +3250,19 @@ fun ChatScreen(
                         else if (isOpenCodeChat) !openCodeState.isBlocking else if (isClaudeChat) !claudeState.isBlocking else systemConnectionState.canSend,
                     isAuth = if (isCodexChat) codexState != ai.antigem.data.agent.codex.CodexState.SIGNED_OUT else if (isOpenCodeChat) true else if (isClaudeChat) claudeChatState != ai.antigem.data.agent.claude.ClaudeStatus.SIGNED_OUT && claudeChatState != ai.antigem.data.agent.claude.ClaudeStatus.SIGNING_IN else systemConnectionState.isAuth,
                     offlineMessage = if (isCodexChat) when (codexState) {
-                        ai.antigem.data.agent.codex.CodexState.NOT_INSTALLED -> "Codex is not installed on the server. See Settings → Codex."
-                        ai.antigem.data.agent.codex.CodexState.DISABLED, ai.antigem.data.agent.codex.CodexState.OUTDATED -> "Restart the server to use Codex."
-                        else -> "The server is offline. Start it to send messages."
+                        ai.antigem.data.agent.codex.CodexState.NOT_INSTALLED -> L.chat.screen.codexIsNotInstalledOnThe
+                        ai.antigem.data.agent.codex.CodexState.DISABLED, ai.antigem.data.agent.codex.CodexState.OUTDATED -> L.chat.screen.restartTheServerToUseCodex
+                        else -> L.chat.screen.theServerIsOfflineStartIt
                     } else if (isOpenCodeChat) when (openCodeState) {
-                        ai.antigem.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> "OpenCode is not installed on the server. See Settings → OpenCode."
-                        ai.antigem.data.agent.opencode.OpenCodeState.DISABLED, ai.antigem.data.agent.opencode.OpenCodeState.OUTDATED -> "Restart the server to use OpenCode."
-                        else -> "The server is offline. Start it to send messages."
+                        ai.antigem.data.agent.opencode.OpenCodeState.NOT_INSTALLED -> L.chat.screen.opencodeIsNotInstalledOnThe
+                        ai.antigem.data.agent.opencode.OpenCodeState.DISABLED, ai.antigem.data.agent.opencode.OpenCodeState.OUTDATED -> L.chat.screen.restartTheServerToUseOpencode
+                        else -> L.chat.screen.theServerIsOfflineStartIt
                     } else if (isClaudeChat) when (claudeState) {
-                        ai.antigem.data.agent.claude.ClaudeStatus.NOT_INSTALLED -> "Claude Code is not installed. Set it up in Settings."
-                        ai.antigem.data.agent.claude.ClaudeStatus.BRIDGE_OUTDATED -> "Restart the local server to use Claude Code."
-                        else -> "The local server is offline. Start it to send messages."
-                    } else if (agyNotInstalled) "Antigravity (agy) is not installed. Install it in Settings → Antigravity → Account & CLI."
-                    else "Server is offline. Start the server to send messages.",
+                        ai.antigem.data.agent.claude.ClaudeStatus.NOT_INSTALLED -> L.chat.screen.claudeCodeIsNotInstalledSet
+                        ai.antigem.data.agent.claude.ClaudeStatus.BRIDGE_OUTDATED -> L.chat.screen.restartTheLocalServerToUse
+                        else -> L.chat.screen.theLocalServerIsOfflineStart
+                    } else if (agyNotInstalled) L.chat.screen.antigravityAgyIsNotInstalledInstall
+                    else L.chat.screen.serverIsOfflineStartTheServer,
                     selectedModel = currentModel,
                     quota = currentQuota,
                     thinkingPreference = thinkingPref,
@@ -3042,7 +3294,7 @@ fun ChatScreen(
                         if (unreadable.isNotEmpty()) {
                             // Claude models cannot read audio or video: say so instead of sending a file it would reject
                             ai.antigem.ui.components.AppToastHelper.showToast(
-                                "Claude can't read audio or video files. Remove them, or tap the mic to dictate instead.",
+                                L.chat.screen.claudeCantReadAudioOrVideo,
                                 ai.antigem.ui.components.ChatToastType.ERROR
                             )
                             return@ChatInputBar
@@ -3111,7 +3363,7 @@ fun ChatScreen(
                     val url = ai.antigem.data.agent.agy.CloudPreviewServer.urlFor(previewConvId, port)
                     context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
                 }.onFailure {
-                    ai.antigem.ui.components.AppToastHelper.showToast("Couldn't open the browser: ${it.message}", ai.antigem.ui.components.ChatToastType.ERROR)
+                    ai.antigem.ui.components.AppToastHelper.showToast(L.chat.screen.couldntOpenTheBrowserMessage(it.message), ai.antigem.ui.components.ChatToastType.ERROR)
                 }
             },
             onDismiss = { showCloudPreview = false }
@@ -3476,7 +3728,7 @@ fun ChatScreen(
             containerColor = MaterialTheme.colorScheme.surface,
             title = {
                 Text(
-                    text = if (action.type == MessageActionType.EDIT) "Edit Message?" else "Regenerate Response?",
+                    text = if (action.type == MessageActionType.EDIT) L.chat.screen.editMessage else L.chat.screen.regenerateResponse,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp
                 )
@@ -3486,13 +3738,13 @@ fun ChatScreen(
                     Text(
                         text = when {
                             (isClaudeChat || isOpenCodeChat || isCodexChat) && action.type == MessageActionType.EDIT ->
-                                "This chat goes back to right before this message, so you can change it and send again. Everything after it is removed from the chat. Files stay as they are."
+                                L.chat.screen.thisChatGoesBackToRight
                             isClaudeChat || isOpenCodeChat || isCodexChat ->
-                                "This chat goes back to right before this reply and ${if (isOpenCodeChat) "OpenCode" else if (isCodexChat) "Codex" else "Claude"} answers the same message again. The current reply is removed from the chat."
+                                L.chat.screen.thisChatGoesBackToRight2(if (isOpenCodeChat) "OpenCode" else if (isCodexChat) L.chat.screen.codex else L.chat.screen.claude)
                             action.type == MessageActionType.EDIT ->
-                                "Editing this message will delete the subsequent response so you can edit and send a fresh query. Do you want to continue?"
+                                L.chat.screen.editingThisMessageWillDeleteThe
                             else ->
-                                "Retrying will delete the current response and regenerate a fresh answer. Do you want to continue?"
+                                L.chat.screen.retryingWillDeleteTheCurrentResponse
                         },
                         fontSize = 14.5.sp,
                         lineHeight = 21.sp,
@@ -3506,7 +3758,7 @@ fun ChatScreen(
                             modifier = Modifier
                                 .padding(top = 12.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable {
+                                .clickable(role = Role.Button) {
                                     restoreSheetFor = action.message to cp
                                     pendingMessageAction = null
                                 }
@@ -3514,7 +3766,7 @@ fun ChatScreen(
                         ) {
                             Icon(androidx.compose.material.icons.Icons.Outlined.History, null, tint = ai.antigem.theme.AppColors.info, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Put files back too? Use this message's restore point", fontSize = 13.5.sp, color = ai.antigem.theme.AppColors.info)
+                            Text(L.chat.screen.putFilesBackTooUseThis, fontSize = 13.5.sp, color = ai.antigem.theme.AppColors.info)
                         }
                     }
                 }
@@ -3540,9 +3792,9 @@ fun ChatScreen(
                 ) {
                     Text(
                         text = when {
-                            (isClaudeChat || isOpenCodeChat || isCodexChat) && action.type == MessageActionType.EDIT -> "Edit"
-                            action.type == MessageActionType.EDIT -> "Edit & Delete"
-                            else -> "Regenerate"
+                            (isClaudeChat || isOpenCodeChat || isCodexChat) && action.type == MessageActionType.EDIT -> L.common.edit
+                            action.type == MessageActionType.EDIT -> L.chat.screen.editDelete
+                            else -> L.chat.screen.regenerate
                         },
                         color = ClaudeTerracotta,
                         fontWeight = FontWeight.Bold
@@ -3551,7 +3803,7 @@ fun ChatScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingMessageAction = null }) {
-                    Text(text = "Cancel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    Text(text = L.common.cancel, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 }
             }
         )
@@ -3573,7 +3825,7 @@ fun ChatScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Stop Generation?",
+                        text = L.chat.screen.stopGeneration,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.5.sp
                     )
@@ -3581,7 +3833,7 @@ fun ChatScreen(
             },
             text = {
                 Text(
-                    text = "Do you want to stop the model from outputting? The current generation will be stopped immediately.",
+                    text = L.chat.screen.doYouWantToStopThe,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
@@ -3597,7 +3849,7 @@ fun ChatScreen(
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(
-                        text = "Stop Output",
+                        text = L.chat.screen.stopOutput,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onError
                     )
@@ -3605,7 +3857,7 @@ fun ChatScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showStopConfirmDialog = false }) {
-                    Text(text = "Cancel", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    Text(text = L.common.cancel, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 }
             }
         )
@@ -3629,7 +3881,7 @@ fun ChatScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Command Terminated",
+                        text = L.chat.screen.commandTerminated,
                         fontWeight = FontWeight.Bold,
                         fontSize = 17.sp
                     )
@@ -3638,7 +3890,7 @@ fun ChatScreen(
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "You stopped the running command:",
+                        text = L.chat.screen.youStoppedTheRunningCommand,
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3659,7 +3911,7 @@ fun ChatScreen(
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "Explain why or give new instructions to AI (optional):",
+                        text = L.chat.screen.explainWhyOrGiveNewInstructions,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3667,7 +3919,7 @@ fun ChatScreen(
                     OutlinedTextField(
                         value = userFeedback,
                         onValueChange = { userFeedback = it },
-                        placeholder = { Text("e.g. It was taking too long, please use grep or find a faster way...", fontSize = 12.5.sp) },
+                        placeholder = { Text(L.chat.screen.eGItWasTakingToo, fontSize = 12.5.sp) },
                         textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 3,
@@ -3683,14 +3935,14 @@ fun ChatScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text(text = "Send to AI & Proceed", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                    Text(text = L.chat.screen.sendToAiProceed, fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { viewModel.dismissTerminatedToolDialog() }
                 ) {
-                    Text(text = "Stop Turn Here", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), fontSize = 12.5.sp)
+                    Text(text = L.chat.screen.stopTurnHere, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), fontSize = 12.5.sp)
                 }
             }
         )
@@ -3825,12 +4077,12 @@ fun ChatScreen(
     if (showAttachFromFiles) {
         ai.antigem.ui.files.FileExplorerDialog(
             stateKey = "chat_attach",
-            title = "Attach files",
+            title = L.chat.screen.attachFiles,
             onPickFiles = { picked ->
                 showAttachFromFiles = false
                 viewModel.addExplorerFiles(picked)
             },
-            pickFilesLabel = "Attach",
+            pickFilesLabel = L.chat.screen.attach,
             showClipboard = false,
             onDismiss = { showAttachFromFiles = false }
         )
@@ -3984,8 +4236,8 @@ fun ChatScreen(
     if (showWorkspaceFolderBrowserDialog) {
         ai.antigem.ui.files.FileExplorerDialog(
             stateKey = "chat_workspace",
-            title = "Choose the chat's project folder",
-            confirmLabel = "Use this folder",
+            title = L.chat.screen.chooseTheChatsProjectFolder,
+            confirmLabel = L.chat.screen.useThisFolder,
             onConfirmFolder = { folder ->
                 showWorkspaceFolderBrowserDialog = false
                 val selectedProj = ProjectItem(File(folder).name.ifBlank { folder }, folder)
@@ -4018,10 +4270,13 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.55f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null
-                ) { showArtifactsDrawer = false }
+                // a tap outside the panel closes it. A plain tap detector, not .clickable: that would fold all of the
+                // panel's text into this one TalkBack item. TalkBack gets its own "Close" item instead.
+                .pointerInput(Unit) { detectTapGestures(onTap = { showArtifactsDrawer = false }) }
+                .semantics {
+                    contentDescription = L.common.close
+                    onClick(label = L.common.close) { showArtifactsDrawer = false; true }
+                }
         ) {
             AnimatedVisibility(
                 visible = showArtifactsDrawer,
@@ -4037,10 +4292,8 @@ fun ChatScreen(
                     .align(Alignment.CenterEnd)
                     .fillMaxHeight()
                     .fillMaxWidth(0.85f)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { /* Absorb clicks */ }
+                    // absorbs taps so they don't reach the backdrop (no semantics: TalkBack reads the panel's items one by one)
+                    .pointerInput(Unit) { detectTapGestures(onTap = {}) }
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -4189,7 +4442,7 @@ fun ChatToastBanner(
                 fontSize = 13.5.sp,
                 fontWeight = FontWeight.Medium,
                 lineHeight = 18.sp,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
@@ -4200,7 +4453,7 @@ fun ChatToastBanner(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Close,
-                    contentDescription = "Dismiss",
+                    contentDescription = L.common.dismiss,
                     tint = textColor.copy(alpha = 0.6f),
                     modifier = Modifier.size(16.dp)
                 )

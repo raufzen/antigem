@@ -17,9 +17,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.AppShortcut
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Terminal
@@ -56,6 +61,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import ai.antigem.data.homescreen.HomeAction
 import ai.antigem.data.homescreen.HomeChat
+import ai.antigem.data.homescreen.HomeLinks
 import ai.antigem.data.homescreen.HomePrefs
 import ai.antigem.data.homescreen.HomeScripts
 import ai.antigem.data.homescreen.HomeShortcuts
@@ -64,7 +70,10 @@ import ai.antigem.domain.model.AgentKind
 import ai.antigem.ui.chat.ChatViewModelHolder
 import ai.antigem.ui.components.AppToastHelper
 import ai.antigem.ui.components.ChatToastType
+import ai.antigem.ui.components.mergedIntoRow
+import ai.antigem.ui.components.toggleRowSemantics
 import kotlinx.coroutines.flow.MutableStateFlow
+import ai.antigem.i18n.L
 
 /**
  * Settings → Home screen: AntiGem's widgets, shortcuts (pages, new chats, one chat, scripts), the app icon's menu and
@@ -97,13 +106,15 @@ fun HomeScreenSettingsCard(modifier: Modifier = Modifier) {
         owner.lifecycle.addObserver(obs)
         onDispose { owner.lifecycle.removeObserver(obs) }
     }
-    // "widget" or "shortcut": the chat picker is open for that
-    var picking by remember { mutableStateOf<String?>(null) }
+    // the chat picker for a chat icon is open
+    var pickingChat by remember { mutableStateOf(false) }
+    var askNewKey by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val canPinWidgets = HomeWidgets.canPin(context)
 
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Section(Icons.Outlined.Widgets, "Widgets") {
-            Hint("Live AntiGem on your home screen: chats update while the agents work, even with the app in the background.")
+        Section(Icons.Outlined.Widgets, L.homescreen.settings.widgets) {
+            Hint(L.homescreen.settings.liveAntigemOnYourHomeScreen)
             Spacer(Modifier.height(8.dp))
             WidgetKind.entries.forEach { k ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -114,7 +125,7 @@ fun HomeScreenSettingsCard(modifier: Modifier = Modifier) {
                             if (n > 0) {
                                 Spacer(Modifier.width(8.dp))
                                 Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)) {
-                                    Text(if (n == 1) "On home screen" else "$n on home screen", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.primary,
+                                    Text(if (n == 1) L.homescreen.settings.onHomeScreen else L.homescreen.settings.nOnHomeScreen(n), fontSize = 10.5.sp, color = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp))
                                 }
                             }
@@ -123,23 +134,23 @@ fun HomeScreenSettingsCard(modifier: Modifier = Modifier) {
                     }
                     Spacer(Modifier.width(8.dp))
                     if (canPinWidgets) {
-                        OutlinedButton(onClick = { if (k == WidgetKind.CHAT) picking = "widget" else HomeWidgets.pin(context, k) }) { Text("Add") }
+                        OutlinedButton(onClick = { HomeWidgets.pin(context, k) }) { Text(L.common.add) }
                     }
                 }
             }
             if (!canPinWidgets) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "To add one: long-press an empty spot on your home screen → Widgets → AntiGem.",
+                    L.homescreen.settings.toAddOneLongPressAn,
                     fontSize = 12.5.sp, color = MaterialTheme.colorScheme.primary
                 )
             } else {
-                Hint("Or: long-press the home screen → Widgets → AntiGem. On Android 12+, long-press a widget to change it.")
+                Hint(L.homescreen.settings.orLongPressTheHomeScreen)
             }
         }
 
-        Section(Icons.Outlined.AppShortcut, "Shortcuts") {
-            Hint("An icon that opens one thing in one tap. Android asks before adding each one.")
+        Section(Icons.Outlined.AppShortcut, L.homescreen.settings.shortcuts) {
+            Hint(L.homescreen.settings.anIconThatOpensOneThing)
             Spacer(Modifier.height(10.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 HomeAction.entries.filter { it.availableFor(enabled) }.forEach { a ->
@@ -155,28 +166,27 @@ fun HomeScreenSettingsCard(modifier: Modifier = Modifier) {
             }
         }
 
-        Section(Icons.AutoMirrored.Outlined.Chat, "A chat on the home screen") {
+        Section(Icons.AutoMirrored.Outlined.Chat, L.homescreen.settings.aChatOnTheHomeScreen) {
             Hint(
-                "An icon that opens one chat right away, like the ChatGPT and Claude apps. It has the agent's color and the chat's " +
-                    "initials, follows renames, and greys out if the chat is deleted."
+                L.homescreen.settings.anIconThatOpensOneChat
             )
             Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = { picking = "shortcut" }) { Text("Choose a chat") }
+            OutlinedButton(onClick = { pickingChat = true }) { Text(L.homescreen.settings.chooseAChat) }
             Spacer(Modifier.height(4.dp))
-            Hint("Also: ⋮ on a chat in the sidebar → Add to home screen, or long-press a chat's title at the top of the chat.")
+            Hint(L.homescreen.settings.alsoOnAChatInThe)
         }
 
-        Section(Icons.Outlined.TouchApp, "App icon menu") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Section(Icons.Outlined.TouchApp, L.homescreen.settings.appIconMenu) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.toggleRowSemantics(recentOn, { HomePrefs.setRecentInMenu(it) })) {
                 Column(Modifier.weight(1f)) {
-                    Text("Newest chats", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Hint("Long-press the AntiGem icon: your 3 newest chats, next to Voice call. Drag one out to keep it on the home screen.")
+                    Text(L.homescreen.settings.newestChats, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Hint(L.homescreen.settings.longPressTheAntigemIconYour)
                 }
-                Switch(checked = recentOn, onCheckedChange = { HomePrefs.setRecentInMenu(it) })
+                Switch(checked = recentOn, onCheckedChange = { HomePrefs.setRecentInMenu(it) }, modifier = Modifier.mergedIntoRow())
             }
         }
 
-        Section(Icons.Outlined.Terminal, "Scripts (~/.shortcuts)") {
+        Section(Icons.Outlined.Terminal, L.homescreen.settings.scriptsShortcuts) {
             Hint(
                 "Like Termux:Widget: files in ~/.shortcuts open a terminal tab that runs them; files in ~/.shortcuts/tasks run " +
                     "in the background and notify you when they end. The first line picks the interpreter (#!/usr/bin/env python3), " +
@@ -186,69 +196,92 @@ fun HomeScreenSettingsCard(modifier: Modifier = Modifier) {
             if (!HomeScripts.dir(context).isDirectory) {
                 OutlinedButton(onClick = {
                     if (HomeScripts.ensureFolders(context)) {
-                        AppToastHelper.showToast("Made ~/.shortcuts and ~/.shortcuts/tasks", ChatToastType.SUCCESS)
+                        AppToastHelper.showToast(L.homescreen.settings.madeShortcutsAndShortcutsTasks, ChatToastType.SUCCESS)
                         HomeWidgets.refreshScripts(context)
                     } else {
-                        AppToastHelper.showToast("Set up the terminal first", ChatToastType.INFO)
+                        AppToastHelper.showToast(L.homescreen.settings.setUpTheTerminalFirst, ChatToastType.INFO)
                     }
-                }) { Text("Make the folders") }
+                }) { Text(L.homescreen.settings.makeTheFolders) }
             } else if (scripts.isEmpty()) {
-                Text("No scripts yet.", fontSize = 12.5.sp, color = subtle())
+                Text(L.homescreen.settings.noScriptsYet, fontSize = 12.5.sp, color = subtle())
             }
             scripts.forEach { s ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(s.label, fontWeight = FontWeight.Medium, fontSize = 13.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(if (s.background) "In the background" else "In a terminal tab", fontSize = 11.5.sp, color = subtle())
+                        Text(if (s.background) L.homescreen.settings.inTheBackground else L.homescreen.settings.inATerminalTab, fontSize = 11.5.sp, color = subtle())
                     }
-                    TextButton(onClick = { HomeShortcuts.pinScript(context, s) }) { Text("Add icon") }
+                    TextButton(onClick = { HomeShortcuts.pinScript(context, s) }) { Text(L.homescreen.settings.addIcon) }
                 }
             }
             if (HomeScripts.dir(context).isDirectory) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { HomeWidgets.refreshScripts(context) }) { Icon(Icons.Outlined.Refresh, "Look again") }
-                    Hint("Added or renamed scripts? Look again (the widget has ⟳ too).")
+                    IconButton(onClick = { HomeWidgets.refreshScripts(context) }) { Icon(Icons.Outlined.Refresh, L.homescreen.settings.lookAgain) }
+                    Hint(L.homescreen.settings.addedOrRenamedScriptsLookAgain)
                 }
             }
         }
 
-        Section(Icons.Outlined.Palette, "Widget look") {
-            Text("Colors", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        Section(Icons.Outlined.Palette, L.homescreen.settings.widgetLook) {
+            Text(L.homescreen.settings.colors, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = colors == HomePrefs.COLORS_APP, onClick = { HomePrefs.setColors(HomePrefs.COLORS_APP); HomeWidgets.refreshAll(context) },
-                    label = { Text("AntiGem theme") })
+                    label = { Text(L.homescreen.settings.antigemTheme) })
                 if (Build.VERSION.SDK_INT >= 31) {
                     FilterChip(selected = colors == HomePrefs.COLORS_WALLPAPER, onClick = { HomePrefs.setColors(HomePrefs.COLORS_WALLPAPER); HomeWidgets.refreshAll(context) },
-                        label = { Text("Wallpaper colors") })
+                        label = { Text(L.homescreen.settings.wallpaperColors) })
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Text("Background", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text(L.homescreen.settings.background, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(100 to "Solid", 85 to "Glass", 60 to "Clear").forEach { (v, label) ->
+                listOf(100 to L.homescreen.settings.solid, 85 to L.homescreen.settings.glass, 60 to L.common.clear).forEach { (v, label) ->
                     FilterChip(selected = opacity == v, onClick = { HomePrefs.setOpacity(v); HomeWidgets.refreshAll(context) }, label = { Text(label) })
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.toggleRowSemantics(hideTitles, { HomePrefs.setHideTitles(it); HomeWidgets.refreshAll(context) })) {
                 Column(Modifier.weight(1f)) {
-                    Text("Hide chat names", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    Hint("Widgets show \"Claude Code chat\" and no reply text, for a home screen others can see.")
+                    Text(L.homescreen.settings.hideChatNames, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Hint(L.homescreen.settings.widgetsShowClaudeCodeChatAnd)
                 }
-                Switch(checked = hideTitles, onCheckedChange = { HomePrefs.setHideTitles(it); HomeWidgets.refreshAll(context) })
+                Switch(checked = hideTitles, onCheckedChange = { HomePrefs.setHideTitles(it); HomeWidgets.refreshAll(context) }, modifier = Modifier.mergedIntoRow())
             }
+        }
+
+        Section(Icons.Outlined.Key, L.homescreen.settings.linkKey) {
+            Hint(L.homescreen.settings.shortcutsAndWidgetsCarryAKey)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = { askNewKey = true }) { Text(L.homescreen.settings.newKey) }
         }
     }
 
-    picking?.let { mode ->
+    if (askNewKey) {
+        AlertDialog(
+            onDismissRequest = { askNewKey = false },
+            title = { Text(L.homescreen.settings.makeANewKeyForHome, fontSize = 18.sp) },
+            text = { Text(L.homescreen.settings.shortcutsAndWidgetsOnAndroid8) },
+            confirmButton = {
+                TextButton(onClick = {
+                    askNewKey = false
+                    scope.launch {
+                        withContext(Dispatchers.IO) { HomeLinks.resetKey(context.applicationContext) }
+                        AppToastHelper.showToast(L.homescreen.settings.newKeyMadeShortcutsAndWidgets, ChatToastType.SUCCESS)
+                    }
+                }) { Text(L.homescreen.settings.newKey) }
+            },
+            dismissButton = { TextButton(onClick = { askNewKey = false }) { Text(L.common.cancel) } }
+        )
+    }
+
+    if (pickingChat) {
         ChatPickerDialog(
-            title = if (mode == "widget") "Which chat should the widget show?" else "Which chat should get an icon?",
+            title = L.homescreen.settings.whichChatShouldGetAnIcon,
             chats = snap?.chats.orEmpty(),
-            onDismiss = { picking = null }
+            onDismiss = { pickingChat = false }
         ) { c ->
-            picking = null
-            if (mode == "widget") HomeWidgets.pin(context, WidgetKind.CHAT, Triple(c.id, c.agentKind, c.title))
-            else HomeShortcuts.pinChat(context, c.id, c.agentKind, c.title)
+            pickingChat = false
+            HomeShortcuts.pinChat(context, c.id, c.agentKind, c.title)
         }
     }
 }
@@ -260,7 +293,7 @@ private fun ChatPickerDialog(title: String, chats: List<HomeChat>, onDismiss: ()
         title = { Text(title, fontSize = 18.sp) },
         text = {
             if (chats.isEmpty()) {
-                Text("No chats yet.")
+                Text(L.homescreen.settings.noChatsYet)
             } else {
                 LazyColumn(Modifier.heightIn(max = 440.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(chats, key = { it.id }) { c -> ChatPickRow(c) { onPick(c) } }
@@ -268,7 +301,7 @@ private fun ChatPickerDialog(title: String, chats: List<HomeChat>, onDismiss: ()
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(L.common.cancel) } }
     )
 }
 

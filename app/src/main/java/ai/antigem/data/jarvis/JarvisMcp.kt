@@ -1,6 +1,7 @@
 package ai.antigem.data.jarvis
 
 import android.content.Context
+import ai.antigem.i18n.L
 import ai.antigem.data.agent.ChatCompletionMonitor
 import ai.antigem.data.daemon.IdeApiClient
 import ai.antigem.data.daemon.ProjectItem
@@ -49,6 +50,12 @@ object JarvisMcp {
         "jarvis_send_to_chat", "jarvis_new_chat", "jarvis_stop_all", "jarvis_stop_chat", "jarvis_new_session", "jarvis_delete_chat",
         "jarvis_set_model"
     )
+
+    /** What the voice chat may still do while the phone is locked: talk, nothing else. */
+    private val TALK_ONLY = setOf("jarvis_speak", "jarvis_ask", "jarvis_status", "jarvis_ignore", "jarvis_help")
+
+    private const val LOCKED = "The phone is locked, so right now Jarvis can only talk: nothing was done. Whoever is speaking may not be " +
+        "the user. Tell them to unlock the phone first, then ask again."
 
     private const val NO_WAIT_NOTE = "Do not wait, sleep or poll. Start any other independent tasks now, tell the user briefly, then END YOUR TURN: " +
         "results come back to you as a <jarvis_events> message."
@@ -383,6 +390,8 @@ object JarvisMcp {
         }
         val caller = who.key
         val textChat = caller != JarvisManagers.VOICE
+        // the voice chat only talks while the phone is locked (anyone holding it can talk to Jarvis)
+        if (!textChat && name !in TALK_ONLY && JarvisController.phoneLocked()) return error(LOCKED)
         friendlyStatus(name, args)?.let { if (textChat) JarvisManagers.setStatus(caller, it) else JarvisController.postStatus(it, explicit = false) }
         return try {
             when (name) {
@@ -554,6 +563,11 @@ object JarvisMcp {
                     val b = claudeOnScreen() ?: return error("The chat on screen is not a Claude Code chat.")
                     val mode = args.optString("mode")
                     if (mode !in listOf("default", "acceptEdits", "plan", "auto", "dontAsk")) return error("Unknown mode $mode")
+                    // Jarvis may make the chat stricter on its own; asking less needs the user's tap
+                    if (mode != "default" && mode != "plan" &&
+                        !ai.antigem.data.security.UserConfirm.ask(context, L.jarvis.mcp.letJarvisAskYouLess, L.jarvis.mcp.jarvisWantsToSwitchTheClaude(mode))) {
+                        return error("The user did not allow it, so the permission mode was not changed.")
+                    }
                     b.setPermissionMode(mode)
                     text("Permission mode is now $mode.")
                 }
@@ -1436,6 +1450,14 @@ object JarvisMcp {
                     ai.antigem.theme.ThemeManager.find(v)?.let { ai.antigem.theme.ThemeManager.select(it); null }
                         ?: "No theme \"$v\". Themes: ${ai.antigem.theme.ThemeManager.all().joinToString { "${it.name} (${it.id})" }}"
                 }),
+            Setting("app_language", "The app's language by id or name (en = English). Translating: the language_mcp tools.",
+                "en|or a language's id or name", false,
+                get = { ai.antigem.i18n.LanguageManager.load(ai.antigem.i18n.LanguageManager.currentId)?.let { "${it.id} (${it.name})" } },
+                set = { v ->
+                    val lang = ai.antigem.i18n.LanguageManager.find(v)
+                    if (lang != null && ai.antigem.i18n.LanguageManager.apply(lang.id)) null
+                    else "No language \"$v\". Languages: " + ai.antigem.i18n.LanguageManager.refreshList().joinToString { "${it.name} (${it.id})" }
+                }),
             Setting("chat_font_scale", "Chat text size", "0.8-1.6", false, get = { vm.chatFontScale.first() }, set = { v ->
                 v.trim().removeSuffix("x").toFloatOrNull()?.let { vm.setChatFontScale(it.coerceIn(0.8f, 1.6f)); null } ?: "Not a number."
             }),
@@ -1496,7 +1518,14 @@ object JarvisMcp {
             textS("jarvis_wake_phrase", "Wake phrase(s), comma separated", true, { P.wakePhrase.value }, { P.wakePhrase.set(it.lowercase()) }),
             choice("jarvis_wake_match", "Whole phrase, or the name alone wakes Jarvis", true, listOf("phrase", "name"), { P.wakeMatch.value }, { P.wakeMatch.set(it) }),
             bool("jarvis_headset_button", "Headset button talks and stops (hands-free)", true, { P.headsetButton.value }, { P.headsetButton.set(it) }),
-            bool("jarvis_hands_free", "Hands-free mode (mic service, works with the screen off)", true, { P.handsFree.value }, { JarvisController.setHandsFree(it) }),
+            // Jarvis may turn hands-free off, never on: only the user decides that the microphone listens with the screen off
+            Setting("jarvis_hands_free", "Hands-free mode (mic service, works with the screen off). Jarvis can only turn it off; the user turns it on in Settings → Jarvis.",
+                "true|false", true, get = { P.handsFree.value },
+                set = { v -> when (parseBool(v)) {
+                    true -> if (P.handsFree.value) null else "Only the user can turn hands-free on (Settings → Jarvis). Nothing was changed."
+                    false -> { JarvisController.setHandsFree(false); null }
+                    null -> "Use true or false."
+                } }),
             choice("jarvis_busy_behavior", "Speaking while Jarvis works: wait (queue), interrupt, or only on the user's interrupt phrases (smart)", true, listOf("queue", "interrupt", "smart"), { P.busyBehavior.value }, { P.busyBehavior.set(it) }),
             choice("jarvis_keep_screen_on", "Keep the screen on", true, listOf("off", "active", "always"), { P.keepScreenOn.value }, { P.keepScreenOn.set(it) }),
             choice("jarvis_idle_orb", "Orb size while idle", true, listOf("tiny", "small", "normal", "hidden"), { P.orbSize.value }, { P.orbSize.set(it) }),
@@ -1732,7 +1761,7 @@ object JarvisMcp {
         if (f.startsWith("/") || f.startsWith("~")) return f to f.substringAfterLast('/')
         if (project != null && f.contains('/')) {
             val p = project.path.trimEnd('/') + "/" + f.removePrefix("./")
-            if (IdeApiClient.readFileDetailed(p) != null) return p to f.substringAfterLast('/')
+            if (ai.antigem.data.files.FileExplorerApi.stat(p).isSuccess) return p to f.substringAfterLast('/')
         }
         // just a name: search the project's files by name on the bridge (no full file tree download)
         val root = project?.path ?: return null
@@ -1753,9 +1782,11 @@ object JarvisMcp {
             if (IdeDaemonManager.activeProject.value?.path != p.path) { IdeDaemonManager.setActiveProject(p); vm.onProjectChanged(p.path) }
         }
         val (path, name) = resolveFile(file) ?: return error("Could not find \"$file\" in the active project. Open the right project first.")
-        val res = IdeApiClient.readFileDetailed(path) ?: return error("Could not read $path.")
-        if (res.category == "binary") return error("$name is a binary file and cannot be opened in the editor.")
-        IdeDaemonManager.openOrSelectTab(path, name, res.content)
+        when (val r = ai.antigem.data.files.IdeFileLauncher.open(path, name, -1)) {
+            is ai.antigem.data.files.IdeFileLauncher.Outcome.Opened -> Unit
+            is ai.antigem.data.files.IdeFileLauncher.Outcome.NeedsConfirm -> return error("$name is a binary file and cannot be opened in the editor.")
+            is ai.antigem.data.files.IdeFileLauncher.Outcome.Failed -> return error(r.message)
+        }
         if (args.optBoolean("show_ide", true)) vm.requestViewMode("IDE")
         return text("Opened $name.")
     }

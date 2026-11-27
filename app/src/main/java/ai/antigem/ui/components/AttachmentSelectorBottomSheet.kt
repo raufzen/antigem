@@ -16,11 +16,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.antigem.theme.ClaudeTerracotta
 import ai.antigem.theme.GeminiBlue
+import ai.antigem.i18n.L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,18 +49,19 @@ fun AttachmentSelectorBottomSheet(
                 .padding(bottom = 24.dp)
         ) {
             Text(
-                text = "Add to Chat",
+                text = L.components.attachmentSelectorBottom.addToChat,
                 fontSize = 17.sp,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.semantics { heading() }
             )
             Spacer(modifier = Modifier.height(14.dp))
 
             AttachmentOptionRow(
                 icon = Icons.Outlined.PhotoCamera,
                 iconColor = ClaudeTerracotta,
-                title = "Camera Photo",
-                subtitle = "Take a photo with your camera to attach directly to the chat.",
+                title = L.components.attachmentSelectorBottom.cameraPhoto,
+                subtitle = L.components.attachmentSelectorBottom.takeAPhotoWithYourCamera,
                 onClick = {
                     onDismiss()
                     onTakePhoto()
@@ -69,8 +73,8 @@ fun AttachmentSelectorBottomSheet(
             AttachmentOptionRow(
                 icon = Icons.Outlined.Image,
                 iconColor = ClaudeTerracotta,
-                title = "Photo / Image",
-                subtitle = "The model sees the image directly. Big photos are shrunk first.",
+                title = L.components.attachmentSelectorBottom.photoImage,
+                subtitle = L.components.attachmentSelectorBottom.theModelSeesTheImageDirectly,
                 onClick = {
                     onDismiss()
                     onPickImage()
@@ -82,8 +86,8 @@ fun AttachmentSelectorBottomSheet(
             AttachmentOptionRow(
                 icon = Icons.Outlined.Description,
                 iconColor = GeminiBlue,
-                title = "Document / File",
-                subtitle = "Copied from your phone to the agent's machine. Avoid large files here: copying takes time and storage. Use \"From Files\" for big files.",
+                title = L.components.attachmentSelectorBottom.documentFile,
+                subtitle = L.components.attachmentSelectorBottom.copiedFromYourPhoneToThe,
                 onClick = {
                     onDismiss()
                     onPickFile()
@@ -95,8 +99,8 @@ fun AttachmentSelectorBottomSheet(
             AttachmentOptionRow(
                 icon = Icons.Outlined.Folder,
                 iconColor = ClaudeTerracotta,
-                title = "From Files",
-                subtitle = "Attach any file, any size: nothing is copied. The agent opens the original file, so it could change it (it is told not to, and usually won't).",
+                title = L.components.attachmentSelectorBottom.fromFiles,
+                subtitle = L.components.attachmentSelectorBottom.attachAnyFileAnySizeNothing,
                 onClick = {
                     onDismiss()
                     onPickFromFiles()

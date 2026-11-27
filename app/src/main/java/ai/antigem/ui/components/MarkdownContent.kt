@@ -18,6 +18,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.horizontalScroll
 import ai.antigem.theme.isAppInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -57,6 +59,16 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.CollectionInfo
+import androidx.compose.ui.semantics.CollectionItemInfo
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.collectionInfo
+import androidx.compose.ui.semantics.collectionItemInfo
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.Image
@@ -103,6 +115,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.delay
 import java.util.regex.Pattern
+import ai.antigem.i18n.L
 
 enum class TableAlignment { LEFT, CENTER, RIGHT }
 
@@ -120,7 +133,7 @@ sealed class MarkdownBlock {
     data class AgentTool(val toolCall: ai.antigem.domain.model.ToolCall) : MarkdownBlock()
     @androidx.compose.runtime.Immutable
     data class AgentError(
-        val title: String = "Error",
+        val title: String = L.components.markdown.error,
         val userMessage: String = "",
         val shortError: String = "",
         val fullError: String = "",
@@ -149,8 +162,20 @@ sealed class MarkdownBlock {
     /** smiles / functionplot / jsxgraph / matter / tikz: drawn from the STEM bundle (Settings → STEM & diagrams). */
     @androidx.compose.runtime.Immutable
     data class Stem(val kind: StemKind, val code: String) : MarkdownBlock()
+    /**
+     * An ```html_app block. [entry]: its file name (```html_app:index.html) when it is a site of several files, which
+     * are then in [files] (path → text, the entry first). [sitePath]: the block only names an .html file on disk.
+     * [complete]: its closing fence (and every file's) arrived; until then the card waits instead of reloading per token.
+     */
     @androidx.compose.runtime.Immutable
-    data class InteractiveUi(val htmlCode: String, val title: String = "Interactive App") : MarkdownBlock()
+    data class InteractiveUi(
+        val htmlCode: String,
+        val title: String = L.components.markdown.interactiveApp,
+        val entry: String = "",
+        val files: Map<String, String> = emptyMap(),
+        val sitePath: String = "",
+        val complete: Boolean = true
+    ) : MarkdownBlock()
     /** An ```antigem-memory block (Agent memory): shown as a chip; [complete] once its closing fence arrived. */
     @androidx.compose.runtime.Immutable
     data class MemoryChip(val body: String, val complete: Boolean) : MarkdownBlock()
@@ -207,7 +232,15 @@ fun MarkdownBlockView(
             AgentErrorCard(error = block, modifier = modifier)
         }
         is MarkdownBlock.InteractiveUi -> {
-            InteractiveUiView(htmlCode = block.htmlCode, title = block.title, modifier = modifier)
+            InteractiveUiView(
+                htmlCode = block.htmlCode,
+                title = block.title,
+                files = block.files,
+                entry = block.entry,
+                sitePath = block.sitePath,
+                complete = block.complete,
+                modifier = modifier
+            )
         }
         is MarkdownBlock.Math -> {
             NativeMathView(latex = block.latex, isDisplay = block.isDisplay, modifier = modifier)
@@ -255,7 +288,8 @@ fun MarkdownBlockView(
                     fontWeight = FontWeight.Bold,
                     color = if (block.level <= 3) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
                 ),
-                modifier = modifier.padding(top = topPad, bottom = bottomPad)
+                // TalkBack can jump from heading to heading
+                modifier = modifier.padding(top = topPad, bottom = bottomPad).semantics { heading() }
             )
         }
         is MarkdownBlock.Bullet -> {
@@ -278,7 +312,9 @@ fun MarkdownBlockView(
                             alignment = LineHeightStyle.Alignment.Center,
                             trim = LineHeightStyle.Trim.None
                         )
-                    )
+                    ),
+                    // the marker is no stop of its own for TalkBack ("bullet"); the item's text is
+                    modifier = Modifier.clearAndSetSemantics { }
                 )
                 FormattedInlineText(
                     text = block.text,
@@ -322,7 +358,7 @@ fun MarkdownBlockView(
             ) {
                 Icon(
                     imageVector = if (block.isChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                    contentDescription = if (block.isChecked) "Completed" else "Incomplete",
+                    contentDescription = if (block.isChecked) L.components.markdown.completed else L.components.markdown.incomplete,
                     tint = if (block.isChecked) QuotaGreen else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                     modifier = Modifier
                         .padding(top = 1.5.dp, end = 6.dp)
@@ -400,35 +436,35 @@ fun MarkdownAlertView(
             accentColor = ai.antigem.theme.AppColors.info,
             lightBg = ai.antigem.theme.AppColors.infoContainer,
             darkBg = ai.antigem.theme.AppColors.info.copy(alpha = 0.13f),
-            defaultTitle = "Note",
+            defaultTitle = L.components.markdown.note,
             icon = Icons.Outlined.Info
         )
         AlertType.TIP -> AlertStyle(
             accentColor = ai.antigem.theme.AppColors.success,
             lightBg = ai.antigem.theme.AppColors.successContainer,
             darkBg = ai.antigem.theme.AppColors.success.copy(alpha = 0.13f),
-            defaultTitle = "Tip",
+            defaultTitle = L.components.markdown.tip,
             icon = Icons.Outlined.Lightbulb
         )
         AlertType.IMPORTANT -> AlertStyle(
             accentColor = ai.antigem.theme.AppColors.accentAlt,
             lightBg = ai.antigem.theme.AppColors.fill,
             darkBg = ai.antigem.theme.AppColors.accentAlt.copy(alpha = 0.13f),
-            defaultTitle = "Important",
+            defaultTitle = L.components.markdown.important,
             icon = Icons.Outlined.PriorityHigh
         )
         AlertType.WARNING -> AlertStyle(
             accentColor = ai.antigem.theme.AppColors.warning,
             lightBg = ai.antigem.theme.AppColors.warningContainer,
             darkBg = ai.antigem.theme.AppColors.warning.copy(alpha = 0.13f),
-            defaultTitle = "Warning",
+            defaultTitle = L.components.markdown.warning,
             icon = Icons.Outlined.Warning
         )
         AlertType.CAUTION -> AlertStyle(
             accentColor = ai.antigem.theme.AppColors.danger,
             lightBg = ai.antigem.theme.AppColors.dangerContainer,
             darkBg = ai.antigem.theme.AppColors.danger.copy(alpha = 0.13f),
-            defaultTitle = "Caution",
+            defaultTitle = L.components.markdown.caution,
             icon = Icons.Outlined.Report
         )
     }
@@ -461,7 +497,8 @@ fun MarkdownAlertView(
                 ) {
                     Icon(
                         imageVector = style.icon,
-                        contentDescription = displayTitle,
+                        // the title next to it says it (it was read twice)
+                        contentDescription = null,
                         tint = style.accentColor,
                         modifier = Modifier.size(16.dp)
                     )
@@ -471,7 +508,8 @@ fun MarkdownAlertView(
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         color = style.accentColor,
-                        letterSpacing = 0.3.sp
+                        letterSpacing = 0.3.sp,
+                        modifier = Modifier.semantics { heading() }
                     )
                 }
 
@@ -529,7 +567,8 @@ fun MarkdownContent(
     }
 }
 
-private val mathDrawableCache = android.util.LruCache<Int, JLatexMathDrawable>(150)
+/** Built formulas by exact LaTeX, colour and size (a hash key could hand one formula's drawing to another). */
+private val mathDrawableCache = android.util.LruCache<String, JLatexMathDrawable>(150)
 
 /**
  * 100% Native Android Canvas JLaTeXMath Renderer:
@@ -561,10 +600,12 @@ fun NativeMathView(
     }
     val isChem = texLatex != cleanLatex
 
-    val cacheKey = texLatex.hashCode() * 31 + textColor * 7 + textSizePx.toInt()
+    val cacheKey = remember(texLatex, textColor, textSizePx) { "$textColor|${textSizePx.toInt()}|$texLatex" }
     val jLatexDrawable = remember(texLatex, textColor, textSizePx, isDark) {
         mathDrawableCache.get(cacheKey) ?: run {
-            val built = try {
+            // Throwable, not Exception: a recursive \newcommand overflows the stack (StackOverflowError is an Error);
+            // the formula then shows as text instead of crashing the app each time the chat opens
+            val built = if (latexTooHeavy(texLatex)) null else try {
                 // First attempt: Colorized LaTeX formula with syntax highlighting (chemistry stays one colour)
                 val colorizedLatex = if (isChem) texLatex else colorizeLatexEquation(texLatex, isDark)
                 JLatexMathDrawable.builder(colorizedLatex)
@@ -572,7 +613,7 @@ fun NativeMathView(
                     .color(textColor)
                     .background(android.graphics.Color.TRANSPARENT)
                     .build()
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 try {
                     // Fallback: Standard monochrome native LaTeX
                     JLatexMathDrawable.builder(texLatex)
@@ -580,7 +621,7 @@ fun NativeMathView(
                         .color(textColor)
                         .background(android.graphics.Color.TRANSPARENT)
                         .build()
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                     null
                 }
             }
@@ -616,7 +657,9 @@ fun NativeMathView(
                     },
                     update = { view ->
                         view.setImageDrawable(jLatexDrawable)
-                    }
+                    },
+                    // the formula is a picture: TalkBack reads its LaTeX source
+                    modifier = Modifier.semantics { contentDescription = cleanLatex }
                 )
             } else {
                 // High-performance typographic fallback if LaTeX formula syntax contains custom non-standard commands
@@ -656,11 +699,10 @@ fun MermaidDiagramView(
         }
     }
 
+    // the diagram source as a JS string literal: it goes into the page as text (textContent), never as HTML, so a
+    // block with </div><script>… in it can't run anything. "<" is escaped too, so no "</script>" ends the script early.
     val safeCode = remember(code) {
-        code.trim()
-            .replace("\\", "\\\\")
-            .replace("`", "\\`")
-            .replace("$", "\\$")
+        org.json.JSONObject.quote(code.trim()).replace("<", "\\u003c")
     }
 
     val mermaidTheme = if (isDark) "dark" else "default"
@@ -703,18 +745,18 @@ fun MermaidDiagramView(
             </style>
         </head>
         <body>
-            <div class="mermaid">
-                $safeCode
-            </div>
+            <div class="mermaid" id="diagram"></div>
             <script>
+                var source = $safeCode;
+                document.getElementById('diagram').textContent = source;
                 try {
                     mermaid.initialize({
                         startOnLoad: true,
                         theme: '$mermaidTheme',
-                        securityLevel: 'loose'
+                        securityLevel: 'strict'
                     });
                 } catch (e) {
-                    document.body.innerText = '$safeCode';
+                    document.body.textContent = source;
                 }
             </script>
         </body>
@@ -762,16 +804,17 @@ fun MermaidDiagramView(
                         .clip(RoundedCornerShape(16.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .padding(2.dp)
+                        .selectableGroup()
                 ) {
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(14.dp))
                             .background(if (selectedTab == 0) ClaudeTerracotta else Color.Transparent)
-                            .clickable { selectedTab = 0 }
+                            .selectable(selected = selectedTab == 0, role = Role.Tab) { selectedTab = 0 }
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Text(
-                            text = "Diagram",
+                            text = L.components.markdown.diagram,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (selectedTab == 0) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -782,11 +825,11 @@ fun MermaidDiagramView(
                         modifier = Modifier
                             .clip(RoundedCornerShape(14.dp))
                             .background(if (selectedTab == 1) ClaudeTerracotta else Color.Transparent)
-                            .clickable { selectedTab = 1 }
+                            .selectable(selected = selectedTab == 1, role = Role.Tab) { selectedTab = 1 }
                             .padding(horizontal = 8.dp, vertical = 3.dp)
                     ) {
                         Text(
-                            text = "Code",
+                            text = L.common.code,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (selectedTab == 1) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -802,21 +845,21 @@ fun MermaidDiagramView(
                         val clip = ClipData.newPlainText("Mermaid Diagram", code)
                         clipboard.setPrimaryClip(clip)
                         isCopied = true
-                        Toast.makeText(context, "Diagram code copied", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L.components.markdown.diagramCodeCopied, Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.size(28.dp)
                 ) {
                     if (isCopied) {
                         Icon(
                             imageVector = Icons.Default.Check,
-                            contentDescription = "Copied",
+                            contentDescription = L.common.copied,
                             tint = QuotaGreen,
                             modifier = Modifier.size(15.dp)
                         )
                     } else {
                         Icon(
                             imageVector = Icons.Outlined.ContentCopy,
-                            contentDescription = "Copy",
+                            contentDescription = L.common.copy,
                             tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                             modifier = Modifier.size(15.dp)
                         )
@@ -831,7 +874,7 @@ fun MermaidDiagramView(
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.OpenInFull,
-                        contentDescription = "Expand",
+                        contentDescription = L.components.codeBlock.fullscreen,
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                         modifier = Modifier.size(15.dp)
                     )
@@ -868,7 +911,7 @@ fun MermaidDiagramView(
                                 settings.useWideViewPort = true
                                 settings.builtInZoomControls = true
                                 settings.displayZoomControls = false
-                                webViewClient = ai.antigem.data.render.RenderBundle.webViewClient(allowNetwork = true)
+                                webViewClient = ai.antigem.data.render.RenderBundle.webViewClient(allowNetwork = true, navigate = false)
                                 tag = htmlContent
                                 loadDataWithBaseURL("https://cdn.jsdelivr.net", htmlContent, "text/html", "UTF-8", null)
                             }
@@ -946,7 +989,7 @@ fun MermaidFullscreenDialog(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
+                            contentDescription = L.common.close,
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -954,7 +997,7 @@ fun MermaidFullscreenDialog(
                     Spacer(modifier = Modifier.width(6.dp))
 
                     Text(
-                        text = "Mermaid Diagram",
+                        text = L.components.markdown.mermaidDiagram,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -968,16 +1011,17 @@ fun MermaidFullscreenDialog(
                             .clip(RoundedCornerShape(16.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant)
                             .padding(2.dp)
+                            .selectableGroup()
                     ) {
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (selectedTab == 0) ClaudeTerracotta else Color.Transparent)
-                                .clickable { selectedTab = 0 }
+                                .selectable(selected = selectedTab == 0, role = Role.Tab) { selectedTab = 0 }
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "Diagram",
+                                text = L.components.markdown.diagram,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (selectedTab == 0) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -988,11 +1032,11 @@ fun MermaidFullscreenDialog(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(14.dp))
                                 .background(if (selectedTab == 1) ClaudeTerracotta else Color.Transparent)
-                                .clickable { selectedTab = 1 }
+                                .selectable(selected = selectedTab == 1, role = Role.Tab) { selectedTab = 1 }
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "Code",
+                                text = L.common.code,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (selectedTab == 1) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -1010,7 +1054,7 @@ fun MermaidFullscreenDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.ZoomOut,
-                                contentDescription = "Zoom Out",
+                                contentDescription = L.components.markdown.zoomOut,
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                                 modifier = Modifier.size(18.dp)
                             )
@@ -1022,7 +1066,7 @@ fun MermaidFullscreenDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.ZoomIn,
-                                contentDescription = "Zoom In",
+                                contentDescription = L.components.markdown.zoomIn,
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                                 modifier = Modifier.size(18.dp)
                             )
@@ -1036,7 +1080,7 @@ fun MermaidFullscreenDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.RestartAlt,
-                                contentDescription = "Reset Zoom",
+                                contentDescription = L.components.markdown.resetZoom,
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                                 modifier = Modifier.size(18.dp)
                             )
@@ -1052,21 +1096,21 @@ fun MermaidFullscreenDialog(
                             val clip = ClipData.newPlainText("Mermaid Diagram", code)
                             clipboard.setPrimaryClip(clip)
                             isCopied = true
-                            Toast.makeText(context, "Diagram code copied", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, L.components.markdown.diagramCodeCopied, Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.size(36.dp)
                     ) {
                         if (isCopied) {
                             Icon(
                                 imageVector = Icons.Default.Check,
-                                contentDescription = "Copied",
+                                contentDescription = L.common.copied,
                                 tint = QuotaGreen,
                                 modifier = Modifier.size(18.dp)
                             )
                         } else {
                             Icon(
                                 imageVector = Icons.Outlined.ContentCopy,
-                                contentDescription = "Copy",
+                                contentDescription = L.common.copy,
                                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                                 modifier = Modifier.size(18.dp)
                             )
@@ -1101,7 +1145,7 @@ fun MermaidFullscreenDialog(
                                     settings.setSupportZoom(true)
                                     settings.builtInZoomControls = true
                                     settings.displayZoomControls = false
-                                    webViewClient = ai.antigem.data.render.RenderBundle.webViewClient(allowNetwork = true)
+                                    webViewClient = ai.antigem.data.render.RenderBundle.webViewClient(allowNetwork = true, navigate = false)
                                     webViewRef = this
                                     loadDataWithBaseURL("https://cdn.jsdelivr.net", htmlContent, "text/html", "UTF-8", null)
                                 }
@@ -1314,13 +1358,16 @@ fun MarkdownDetailsView(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { isExpanded = !isExpanded }
+                    // TalkBack: "Expanded" / "Collapsed", and "double-tap to expand / collapse"
+                    .semantics { stateDescription = if (isExpanded) L.components.a11y.expanded else L.components.a11y.collapsed }
+                    .clickable(onClickLabel = if (isExpanded) L.common.collapse else L.common.expand) { isExpanded = !isExpanded }
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
                     imageVector = Icons.Default.ExpandMore,
-                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    // the row says Expanded / Collapsed
+                    contentDescription = null,
                     tint = ClaudeTerracotta,
                     modifier = Modifier
                         .size(20.dp)
@@ -1356,6 +1403,18 @@ fun MarkdownDetailsView(
             }
         }
     }
+}
+
+// An error can carry a whole log or page (megabytes); shown in full, its Text grows taller than the 16,777,215 px a
+// layout may be and the chat crashes. The card shows the start of it; Copy still copies everything.
+private const val ERROR_TEXT_MAX_CHARS = 4_000
+private const val ERROR_DETAILS_MAX_CHARS = 20_000
+
+private fun capErrorText(text: String, max: Int): String {
+    if (text.length <= max) return text
+    // never split an emoji (surrogate pair) in two
+    val cut = if (Character.isHighSurrogate(text[max - 1])) max - 1 else max
+    return text.substring(0, cut).trimEnd() + "\n" + L.components.markdown.moreCharsHidden(text.length - cut)
 }
 
 /**
@@ -1395,13 +1454,13 @@ fun AgentErrorCard(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.ErrorOutline,
-                    contentDescription = "Error",
+                    contentDescription = L.components.markdown.error,
                     tint = errorColor,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = error.title.ifBlank { "Agent Execution Error" },
+                    text = error.title.ifBlank { L.components.markdown.agentExecutionError },
                     fontSize = 13.5.sp,
                     fontWeight = FontWeight.Bold,
                     color = errorColor
@@ -1413,7 +1472,7 @@ fun AgentErrorCard(
                         color = errorColor.copy(alpha = 0.15f)
                     ) {
                         Text(
-                            text = "Code: ${error.errorCode}",
+                            text = L.components.markdown.codeErrorcode(error.errorCode),
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = errorColor,
@@ -1427,23 +1486,23 @@ fun AgentErrorCard(
                     onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val copyText = buildString {
-                            appendLine("Error: ${error.title}")
-                            if (error.userMessage.isNotBlank()) appendLine("Message: ${error.userMessage}")
-                            if (error.shortError.isNotBlank()) appendLine("Detail: ${error.shortError}")
-                            if (error.errorCode != null) appendLine("Code: ${error.errorCode}")
+                            appendLine(L.components.markdown.errorTitle(error.title))
+                            if (error.userMessage.isNotBlank()) appendLine(L.components.markdown.messageUsermessage(error.userMessage))
+                            if (error.shortError.isNotBlank()) appendLine(L.components.markdown.detailShorterror(error.shortError))
+                            if (error.errorCode != null) appendLine(L.components.markdown.codeErrorcode(error.errorCode))
                             if (error.errorId.isNotBlank()) appendLine("ID: ${error.errorId}")
-                            if (error.fullError.isNotBlank()) appendLine("\nFull Trace:\n${error.fullError}")
-                            if (error.rawJson.isNotBlank()) appendLine("\nRaw JSON:\n${error.rawJson}")
+                            if (error.fullError.isNotBlank()) appendLine(L.components.markdown.fullTraceFullerror(error.fullError))
+                            if (error.rawJson.isNotBlank()) appendLine(L.components.markdown.rawJsonRawjson(error.rawJson))
                         }.trim()
                         val clip = ClipData.newPlainText("Error Details", copyText)
                         clipboard.setPrimaryClip(clip)
-                        Toast.makeText(context, "Error details copied to clipboard", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, L.components.markdown.errorDetailsCopiedToClipboard, Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.size(24.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.ContentCopy,
-                        contentDescription = "Copy Error Details",
+                        contentDescription = L.components.markdown.copyErrorDetails,
                         tint = errorColor.copy(alpha = 0.7f),
                         modifier = Modifier.size(14.dp)
                     )
@@ -1454,7 +1513,7 @@ fun AgentErrorCard(
             if (error.userMessage.isNotBlank() && error.userMessage != error.title) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = error.userMessage,
+                    text = capErrorText(error.userMessage, ERROR_TEXT_MAX_CHARS),
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f),
                     lineHeight = 18.sp
@@ -1464,7 +1523,7 @@ fun AgentErrorCard(
             if (error.shortError.isNotBlank() && error.shortError != error.userMessage) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = error.shortError,
+                    text = capErrorText(error.shortError, ERROR_TEXT_MAX_CHARS),
                     fontSize = 12.5.sp,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
@@ -1479,7 +1538,7 @@ fun AgentErrorCard(
                     onClick = { ai.antigem.ui.opencode.OpenCodeUiEvents.requestProviders() },
                     shape = RoundedCornerShape(10.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                ) { Text("Reconnect in Settings", fontSize = 12.5.sp) }
+                ) { Text(L.components.markdown.reconnectInSettings, fontSize = 12.5.sp) }
             }
 
             // Full Error / Stack Trace / JSON Accordion if present
@@ -1489,6 +1548,8 @@ fun AgentErrorCard(
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
+                        // TalkBack: "Expanded" / "Collapsed"
+                        .semantics { stateDescription = if (isExpanded) L.components.a11y.expanded else L.components.a11y.collapsed }
                         .clickable { isExpanded = !isExpanded }
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                         .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -1496,7 +1557,8 @@ fun AgentErrorCard(
                 ) {
                     Icon(
                         imageVector = Icons.Default.ExpandMore,
-                        contentDescription = if (isExpanded) "Collapse" else "Expand",
+                        // the text next to it says View / Hide error details
+                        contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                         modifier = Modifier
                             .size(16.dp)
@@ -1504,7 +1566,7 @@ fun AgentErrorCard(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = if (isExpanded) "Hide Error Details & Stack Trace" else "View Error Details & Stack Trace",
+                        text = if (isExpanded) L.components.markdown.hideErrorDetailsStackTrace else L.components.markdown.viewErrorDetailsStackTrace,
                         fontSize = 11.5.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
@@ -1526,14 +1588,14 @@ fun AgentErrorCard(
                     ) {
                         if (error.errorId.isNotBlank()) {
                             Text(
-                                text = "Error ID: ${error.errorId}",
+                                text = L.components.markdown.errorIdErrorid(error.errorId),
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                         }
-                        val verboseText = error.fullError.ifBlank { error.rawJson }
+                        val verboseText = capErrorText(error.fullError.ifBlank { error.rawJson }, ERROR_DETAILS_MAX_CHARS)
                         SelectionContainer {
                             Text(
                                 text = verboseText,
@@ -1587,7 +1649,7 @@ fun MarkdownImageView(
                     BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f)),
                     RoundedCornerShape(12.dp)
                 )
-                .clickable {
+                .clickable(onClickLabel = L.components.a11y.viewImage, role = Role.Image) {
                     showFullDialog = true
                 },
             shape = RoundedCornerShape(12.dp),
@@ -1615,7 +1677,8 @@ fun MarkdownImageView(
                             }
                         )
                         .build(),
-                    contentDescription = image.alt,
+                    // never an unlabeled image for TalkBack
+                    contentDescription = image.alt.ifBlank { L.components.a11y.image },
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1635,13 +1698,13 @@ fun MarkdownImageView(
                     ) {
                         Icon(
                             imageVector = Icons.Default.BrokenImage,
-                            contentDescription = "Failed to load image",
+                            contentDescription = L.components.markdown.failedToLoadImage,
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(32.dp)
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = image.alt.ifBlank { "Image could not be loaded" },
+                            text = image.alt.ifBlank { L.components.markdown.imageCouldNotBeLoaded },
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1657,7 +1720,9 @@ fun MarkdownImageView(
                 fontSize = 11.5.sp,
                 fontStyle = FontStyle.Italic,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                // the image above already reads its alt text
+                modifier = Modifier.clearAndSetSemantics { }
             )
         }
     }
@@ -1831,7 +1896,7 @@ fun YouTubeVideoView(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = video.title?.takeIf { it.isNotBlank() } ?: "YouTube Video",
+                        text = video.title?.takeIf { it.isNotBlank() } ?: L.components.markdown.youtubeVideo,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -1850,7 +1915,7 @@ fun YouTubeVideoView(
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.Close,
-                                contentDescription = "Close Player",
+                                contentDescription = L.components.markdown.closePlayer,
                                 tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f),
                                 modifier = Modifier.size(16.dp)
                             )
@@ -1869,7 +1934,7 @@ fun YouTubeVideoView(
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.OpenInNew,
-                            contentDescription = "Open in YouTube",
+                            contentDescription = L.components.markdown.openInYoutube,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                             modifier = Modifier.size(16.dp)
                         )
@@ -1890,11 +1955,11 @@ fun YouTubeVideoView(
                     // Thumbnail Preview
                     AsyncImage(
                         model = thumbnailRequest,
-                        contentDescription = video.title ?: "YouTube Video Thumbnail",
+                        contentDescription = video.title ?: L.components.markdown.youtubeVideoThumbnail,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
-                            .clickable { onStartPlay() }
+                            .clickable(onClickLabel = L.components.markdown.playVideo) { onStartPlay() }
                     )
 
                     // Soft dark gradient overlay
@@ -1909,6 +1974,9 @@ fun YouTubeVideoView(
                                     )
                                 )
                             )
+                            // touch only: for TalkBack it was an unlabeled button over the thumbnail (before the
+                            // clickable, so its semantics are cleared too)
+                            .clearAndSetSemantics { }
                             .clickable { onStartPlay() }
                     )
 
@@ -1923,7 +1991,7 @@ fun YouTubeVideoView(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Filled.PlayArrow,
-                                contentDescription = "Play Video",
+                                contentDescription = L.components.markdown.playVideo,
                                 tint = Color.White,
                                 modifier = Modifier.size(26.dp)
                             )
@@ -1990,6 +2058,8 @@ fun MarkdownTableView(
     val t0 = System.nanoTime()
     val isDark = isAppInDarkTheme()
     val density = LocalDensity.current
+    // table semantics (row / column for each cell) only while TalkBack is on: no extra nodes per cell otherwise
+    val talkBackOn = rememberTalkBackOn()
 
     val numCols = maxOf(
         table.headers.size,
@@ -2092,6 +2162,11 @@ fun MarkdownTableView(
                 modifier = Modifier
                     .horizontalScroll(rememberScrollState())
                     .width(tableTotalWidth)
+                    .then(
+                        if (talkBackOn) Modifier.semantics {
+                            collectionInfo = CollectionInfo(rowCount = cachedRows.size + 1, columnCount = numCols)
+                        } else Modifier
+                    )
             ) {
                 // Table Header Row
                 Row(
@@ -2128,7 +2203,12 @@ fun MarkdownTableView(
                             Text(
                                 text = headerResult.annotatedString,
                                 inlineContent = headerResult.inlineContent,
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().then(
+                                    if (talkBackOn) Modifier.semantics {
+                                        heading()
+                                        collectionItemInfo = CollectionItemInfo(rowIndex = 0, rowSpan = 1, columnIndex = colIdx, columnSpan = 1)
+                                    } else Modifier
+                                ),
                                 style = TextStyle(
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
@@ -2181,7 +2261,11 @@ fun MarkdownTableView(
                                 Text(
                                     text = cellResult.annotatedString,
                                     inlineContent = cellResult.inlineContent,
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.fillMaxWidth().then(
+                                        if (talkBackOn) Modifier.semantics {
+                                            collectionItemInfo = CollectionItemInfo(rowIndex = rowIdx + 1, rowSpan = 1, columnIndex = colIdx, columnSpan = 1)
+                                        } else Modifier
+                                    ),
                                     style = TextStyle(
                                         fontSize = 13.sp,
                                         lineHeight = 19.sp,
@@ -2281,7 +2365,25 @@ private val INLINE_MARKDOWN_PATTERN: Pattern = Pattern.compile(
 )
 
 object MarkdownTextCache {
-    private val cache = android.util.LruCache<Int, FormattedInlineResult>(600)
+    /** Room for formatted text, in estimated bytes: thousands of normal paragraphs, few giant ones. */
+    private const val MAX_BYTES = 8 * 1024 * 1024
+
+    /** The exact text and style flags (not a hash: two texts whose hashes collide never share a result). */
+    private data class Key(val text: String, val isDark: Boolean, val isStrikethrough: Boolean)
+
+    private val cache = object : android.util.LruCache<Key, FormattedInlineResult>(MAX_BYTES) {
+        override fun sizeOf(key: Key, value: FormattedInlineResult): Int {
+            val str = value.annotatedString
+            val chars = key.text.length.toLong() + str.length
+            val spans = str.spanStyles.size.toLong() + str.paragraphStyles.size + value.inlineContent.size * 4
+            return (chars * 2 + spans * 48 + 64).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        }
+    }
+
+    /** Drops part of the cache (Android is short of memory): [fraction] of the room is kept. */
+    fun trim(fraction: Float) {
+        cache.trimToSize((MAX_BYTES * fraction).toInt())
+    }
 
     fun prewarm(text: String, isDark: Boolean = true) {
         getOrCompute(text, isStrikethrough = false, isDark = isDark, density = null, fileLinkHandler = null)
@@ -2308,7 +2410,7 @@ object MarkdownTextCache {
             return FormattedInlineResult(str, emptyMap())
         }
 
-        val cacheKey = text.hashCode() * 31 + (if (isDark) 1 else 0) * 7 + (if (isStrikethrough) 2 else 0)
+        val cacheKey = Key(text, isDark, isStrikethrough)
         return cache.get(cacheKey) ?: run {
             val res = buildRichAnnotatedString(text, isStrikethrough, isDark, density, fileLinkHandler)
             cache.put(cacheKey, res)
@@ -2448,10 +2550,15 @@ private fun buildRichAnnotatedString(
             } else if (isFile) {
                 val cleanPath = linkUrl.removePrefix("file://").substringBefore("#")
                 val fileName = java.io.File(cleanPath).name.ifBlank { cleanPath }
+                // the AI picks the title: the real place is always shown next to a title that isn't the file's name, so
+                // a link called "report.pdf" can't hide that it opens ~/.ssh/id_ed25519
+                val shortPath = cleanPath.trimEnd('/').split('/').filter { it.isNotEmpty() }.takeLast(2).joinToString("/").ifBlank { cleanPath }
                 val displayLabel = if (linkTitle.isBlank() || linkTitle.startsWith("file://", ignoreCase = true) || linkTitle.startsWith("/")) {
                     fileName
-                } else {
+                } else if (linkTitle == fileName) {
                     linkTitle
+                } else {
+                    "$linkTitle · $shortPath"
                 }
 
                 builder.pushLink(
@@ -2664,20 +2771,21 @@ private fun buildRichAnnotatedString(
             val texMath = if (ai.antigem.data.render.RenderBundle.isActive(ai.antigem.data.render.RenderComponent.CHEM))
                 ai.antigem.data.render.ChemNotation.expand(mathContent) else mathContent
             val colorizedMath = if (texMath != mathContent) texMath else colorizeLatexEquation(mathContent, isDark)
-            val drawable = try {
+            // Throwable: a recursive \newcommand overflows the stack (an Error), see above
+            val drawable = if (latexTooHeavy(texMath)) null else try {
                 JLatexMathDrawable.builder(colorizedMath)
                     .textSize(textSizePx)
                     .color(baseColor)
                     .background(android.graphics.Color.TRANSPARENT)
                     .build()
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 try {
                     JLatexMathDrawable.builder(texMath)
                         .textSize(textSizePx)
                         .color(baseColor)
                         .background(android.graphics.Color.TRANSPARENT)
                         .build()
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                     null
                 }
             }
@@ -2839,7 +2947,7 @@ private fun parseErrorPayloadToBlock(raw: String): MarkdownBlock.AgentError {
         val trimmed = raw.trim()
         if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
             val json = Json.parseToJsonElement(trimmed).jsonObject
-            val title = json["title"]?.jsonPrimitive?.content ?: "Agent Execution Error"
+            val title = json["title"]?.jsonPrimitive?.content ?: L.components.markdown.agentExecutionError
             val userMessage = json["userMessage"]?.jsonPrimitive?.content ?: ""
             val shortError = json["shortError"]?.jsonPrimitive?.content ?: ""
             val fullError = json["fullError"]?.jsonPrimitive?.content ?: ""
@@ -2862,11 +2970,11 @@ private fun parseErrorPayloadToBlock(raw: String): MarkdownBlock.AgentError {
 
     val clean = raw.removePrefix("⚠️").trim()
     val lines = clean.lines()
-    val firstLine = lines.firstOrNull() ?: "Agent Execution Error"
+    val firstLine = lines.firstOrNull() ?: L.components.markdown.agentExecutionError
     val rest = if (lines.size > 1) lines.drop(1).joinToString("\n").trim() else ""
     val isStackOrTrace = rest.contains("stack trace", ignoreCase = true) || rest.contains("Wraps:", ignoreCase = true)
     return MarkdownBlock.AgentError(
-        title = if (firstLine.length < 50 && !firstLine.contains('\n')) firstLine else "Execution Notice",
+        title = if (firstLine.length < 50 && !firstLine.contains('\n')) firstLine else L.components.markdown.executionNotice,
         userMessage = if (firstLine.length >= 50) firstLine else (if (rest.isNotBlank() && !isStackOrTrace) rest else firstLine),
         shortError = if (rest.isNotBlank() && !isStackOrTrace) rest else (if (firstLine.length >= 50) firstLine else ""),
         fullError = if (isStackOrTrace) rest else (if (clean.contains("stack trace", ignoreCase = true)) clean else "")
@@ -2968,7 +3076,7 @@ fun parseMarkdownBlocks(
                 if (finalThought.isNotBlank()) {
                     result.add(MarkdownBlock.AgentThought(finalThought, durationMs, isStreaming = isStreamingThought))
                 } else if (!closed || isExplicitStreaming) {
-                    result.add(MarkdownBlock.AgentThought("Thinking...", durationMs, isStreaming = true))
+                    result.add(MarkdownBlock.AgentThought(L.components.markdown.thinking, durationMs, isStreaming = true))
                 }
                 continue
             }
@@ -3136,8 +3244,13 @@ fun parseMarkdownBlocks(
             } else if (StemKind.fromLang(lang) != null && i < lines.size) {
                 // only once the closing ``` arrived: a block still streaming in stays code (no TeX run per token)
                 result.add(MarkdownBlock.Stem(kind = StemKind.fromLang(lang)!!, code = codeLines.joinToString("\n").trim()))
-            } else if (lang.equals("interactive_ui", ignoreCase = true) || lang.equals("interactive_app", ignoreCase = true) || lang.equals("html_app", ignoreCase = true) || lang.equals("canvas_app", ignoreCase = true) || lang.equals("widget", ignoreCase = true) || lang.equals("ui", ignoreCase = true) || lang.equals("mini_app", ignoreCase = true)) {
-                result.add(MarkdownBlock.InteractiveUi(htmlCode = codeLines.joinToString("\n").trim()))
+            } else if (isAppLang(lang.substringBefore(':'))) {
+                // ```html_app (one page), ```html_app:index.html (a site whose other files are ```css:style.css … blocks
+                // in this message, see groupAppFiles) or ```html_app with only /abs/path/page.html (a site on disk)
+                val code = codeLines.joinToString("\n").trim()
+                val entry = lang.substringAfter(':', "").trim().let { appFilePath(it) ?: "" }
+                val sitePath = code.takeIf { !it.contains('\n') && it.startsWith("/") && (it.endsWith(".html", true) || it.endsWith(".htm", true)) } ?: ""
+                result.add(MarkdownBlock.InteractiveUi(htmlCode = code, entry = entry, sitePath = sitePath, complete = i < lines.size))
             } else {
                 result.add(MarkdownBlock.Code(language = lang, code = codeLines.joinToString("\n")))
             }
@@ -3148,7 +3261,7 @@ fun parseMarkdownBlocks(
         // 4. <details> and <summary> Collapsible Sections
         if (line.trimStart().startsWith("<details", ignoreCase = true)) {
             val isOpen = line.contains("open", ignoreCase = true)
-            var summary = "Details"
+            var summary = L.common.details
             val bodyLines = mutableListOf<String>()
             i++
 
@@ -3196,7 +3309,7 @@ fun parseMarkdownBlocks(
                     MarkdownBlock.YouTubeVideo(
                         videoId = ytId,
                         originalUrl = if (linkUrl.isNotBlank()) linkUrl else "https://www.youtube.com/watch?v=$ytId",
-                        title = alt.ifBlank { "YouTube Video" },
+                        title = alt.ifBlank { L.components.markdown.youtubeVideo },
                         customThumbnailUrl = imgUrl.takeIf { it.isNotBlank() }
                     )
                 )
@@ -3227,7 +3340,7 @@ fun parseMarkdownBlocks(
                     MarkdownBlock.YouTubeVideo(
                         videoId = ytId,
                         originalUrl = if (url.contains("youtube.com/watch") || url.contains("youtu.be")) url else "https://www.youtube.com/watch?v=$ytId",
-                        title = alt.ifBlank { "YouTube Video" },
+                        title = alt.ifBlank { L.components.markdown.youtubeVideo },
                         customThumbnailUrl = if (url.contains("img.youtube.com")) url else null
                     )
                 )
@@ -3385,7 +3498,51 @@ fun parseMarkdownBlocks(
         }
     }
 
-    return result
+    return groupAppFiles(result, lines)
+}
+
+private fun isAppLang(lang: String): Boolean = lang.lowercase() in APP_LANGS
+
+private val APP_LANGS = setOf("interactive_ui", "interactive_app", "html_app", "canvas_app", "widget", "ui", "mini_app")
+
+/** A file name after ```lang: — a relative path inside the app (no "..", no hidden parts), or null. */
+private fun appFilePath(raw: String): String? {
+    val p = raw.trim().removePrefix("./").trimStart('/')
+    if (p.isEmpty() || p.length > 200 || p.any { it.isWhitespace() || it == '\\' || it == '?' || it == '#' }) return null
+    if (p.split('/').any { it.isEmpty() || it.startsWith(".") }) return null
+    return p
+}
+
+/**
+ * A multi-file app: when a message has an ```html_app:<entry> block, its ```lang:<path> code blocks (css:style.css,
+ * js:app.js, html_app:about.html …) are the app's other files. They join the first named app block (one card, with a
+ * file picker in its Code tab) instead of showing as code. Without a named app block, nothing changes. While a fence
+ * is still open a file may still be arriving: the app waits (no reload per token).
+ */
+private fun groupAppFiles(blocks: MutableList<MarkdownBlock>, lines: List<String>): List<MarkdownBlock> {
+    val appIndex = blocks.indexOfFirst { it is MarkdownBlock.InteractiveUi && it.entry.isNotEmpty() && it.sitePath.isEmpty() }
+    if (appIndex < 0) return blocks
+    val app = blocks[appIndex] as MarkdownBlock.InteractiveUi
+    val files = linkedMapOf(app.entry to app.htmlCode)
+    val out = ArrayList<MarkdownBlock>(blocks.size)
+    var appAt = 0
+    blocks.forEachIndexed { index, block ->
+        if (index == appIndex) {
+            appAt = out.size
+            return@forEachIndexed
+        }
+        val named = when {
+            block is MarkdownBlock.Code && block.language.contains(':') ->
+                appFilePath(block.language.substringAfter(':'))?.let { it to block.code.trimEnd() }
+            block is MarkdownBlock.InteractiveUi && block.entry.isNotEmpty() && block.sitePath.isEmpty() -> block.entry to block.htmlCode
+            else -> null
+        }
+        if (named != null) files.putIfAbsent(named.first, named.second) else out.add(block)
+    }
+    // an open fence anywhere: a file may still be arriving
+    val streaming = lines.count { it.trimStart().startsWith("```") } % 2 == 1
+    out.add(appAt, app.copy(files = files, complete = app.complete && !streaming))
+    return out
 }
 
 /**
@@ -3431,7 +3588,7 @@ private fun parseTable(lines: List<String>, startIndex: Int): Pair<MarkdownBlock
         if (rawHeaders.size < numCols) rawHeaders + List(numCols - rawHeaders.size) { "" }
         else rawHeaders.take(numCols)
     } else {
-        (1..numCols).map { "Column $it" }
+        (1..numCols).map { L.components.markdown.columnValue(it) }
     }
 
     val normalizedAlignments = if (alignments.size < numCols) {
@@ -3461,3 +3618,11 @@ private fun parseTable(lines: List<String>, startIndex: Int): Pair<MarkdownBlock
 
     return Pair(MarkdownBlock.Table(headers, rows, normalizedAlignments), currIndex)
 }
+
+/**
+ * A formula JLaTeXMath should not expand (it has no depth limit): very long, or defining many macros (macros that
+ * call each other can blow up). It shows as its source text instead.
+ */
+private val latexMacroDef = Regex("""\\(?:re)?newcommand|\\def\b|\\let\b""")
+internal fun latexTooHeavy(tex: String): Boolean =
+    tex.length > 8_000 || latexMacroDef.findAll(tex).take(9).count() > 8

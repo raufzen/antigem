@@ -1,5 +1,7 @@
 package ai.antigem.data.agent.claude
 
+import ai.antigem.data.media.InlineMediaStore
+import ai.antigem.data.preferences.AuthPreferences
 import ai.antigem.domain.model.ChatAttachment
 import ai.antigem.domain.model.ChatMessage
 import ai.antigem.domain.model.ChoiceOption
@@ -24,6 +26,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import ai.antigem.i18n.L
 
 /**
  * Builds the chat feed of one Claude conversation from stream-json events (live) and transcript entries (history),
@@ -426,7 +429,7 @@ class ClaudeTranscript {
         val texts = blocks.filter { it.type == "text" }.mapNotNull { it.text }
         val joined = texts.joinToString("\n").trim()
         if (joined.startsWith("[Request interrupted by user")) {
-            addNotice("Interrupted by user")
+            addNotice(L.agent.claudeTranscript.interruptedByUser)
             endTurn()
             e.uuid?.let { lastEventUuid = it }
             return
@@ -507,7 +510,7 @@ class ClaudeTranscript {
                 val toolId = s.tool_use_id ?: return
                 s.task_id?.let { taskToTool[it] = toolId }
                 tools[toolId]?.let {
-                    it.progress = "Running: ${s.description.orEmpty()}".trimEnd(':', ' ')
+                    it.progress = L.agent.claudeTranscript.runningDescription(s.description.orEmpty()).trimEnd(':', ' ')
                     touch(it.turn)
                 }
             }
@@ -608,6 +611,9 @@ class ClaudeTranscript {
         val text = contentText(r.content)
         val isError = r.is_error == true
         tool.output = toolOutput(tool, text, structured)
+        // the output is made: keep only the small fields the card still shows (a Write's whole file, an Edit's old and
+        // new text are not kept for the rest of the chat)
+        tool.input = slimInput(tool.name, tool.input)
         tool.progress = null
         tool.status = when {
             !isError -> "SUCCESS"
@@ -755,6 +761,19 @@ class ClaudeTranscript {
         /** Internal tools that are not interesting to show as cards. */
         private val HIDDEN_TOOLS = setOf("ToolSearch")
 
+        /** Tools whose whole input is shown after they ran (a todo list, a plan, questions): kept as it is. */
+        private val SHOWN_INPUT_TOOLS = setOf("TodoWrite", "ExitPlanMode", "AskUserQuestion")
+
+        /** The input fields [describeTool] reads; everything else of a finished tool's input is dropped. */
+        private val DESCRIBED_KEYS = setOf("command", "file_path", "notebook_path", "pattern", "path", "query", "url", "description")
+
+        /** A finished tool's input with only what its card shows ([describeTool]). */
+        private fun slimInput(name: String, input: JsonObject?): JsonObject? {
+            if (input == null || name in SHOWN_INPUT_TOOLS) return input
+            if (input.keys.all { it in DESCRIBED_KEYS }) return input
+            return JsonObject(input.filterKeys { it in DESCRIBED_KEYS })
+        }
+
         fun toolTypeFor(name: String): ToolType = when {
             name == "Bash" || name == "BashOutput" || name == "KillShell" -> ToolType.BASH
             name == "Read" -> ToolType.VIEW_FILE
@@ -781,15 +800,15 @@ class ClaudeTranscript {
                 "Grep" -> str("pattern") + str("path").takeIf { it.isNotBlank() }?.let { " in $it" }.orEmpty()
                 "WebSearch" -> str("query")
                 "WebFetch" -> str("url")
-                "Agent", "Task" -> str("description").ifBlank { "Subagent" }
+                "Agent", "Task" -> str("description").ifBlank { L.agent.claudeTranscript.subagent }
                 "TodoWrite" -> {
                     val todos = (input["todos"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
                     val done = todos.count { (it["status"] as? JsonPrimitive)?.contentOrNull == "completed" }
-                    "Todo list ($done/${todos.size} done)"
+                    L.agent.claudeTranscript.todoListDoneTodoscountDone(done, todos.size)
                 }
-                "ExitPlanMode" -> "Plan ready for review"
+                "ExitPlanMode" -> L.agent.claudeTranscript.planReadyForReview
                 "AskUserQuestion" -> (input["questions"] as? JsonArray)?.firstOrNull()?.jsonObject
-                    ?.get("question")?.jsonPrimitive?.contentOrNull ?: "Question"
+                    ?.get("question")?.jsonPrimitive?.contentOrNull ?: L.agent.claudeTranscript.question
                 else -> if (name.startsWith("mcp__")) name.removePrefix("mcp__").replace("__", " · ") else name
             }.ifBlank { name }
         }
@@ -823,7 +842,7 @@ class ClaudeTranscript {
                 )
             }
             val header = (input["questions"] as? JsonArray)?.firstOrNull()?.jsonObject?.get("header")?.jsonPrimitive?.contentOrNull
-            return ChoiceQuestionnaire(title = header ?: "Claude has a question", questions = questions)
+            return ChoiceQuestionnaire(title = header ?: L.agent.claudeTranscript.claudeHasAQuestion, questions = questions)
         }
 
         fun contentText(content: JsonElement?): String = when (content) {
@@ -883,22 +902,22 @@ class ClaudeTranscript {
         private fun providerErrorTitle(msg: String): String {
             val status = Regex("""\b(?:API Error:?|HTTP|status)\s*(?:Request rejected\s*)?\(?(\d{3})\b""", RegexOption.IGNORE_CASE).find(msg)?.groupValues?.get(1)?.toIntOrNull()
             return when {
-                status == 429 || msg.contains("rate limit", ignoreCase = true) -> "Provider rate limit"
-                status == 401 || status == 403 -> "Provider rejected the key"
-                status == 402 || msg.contains("insufficient", ignoreCase = true) || msg.contains("balance", ignoreCase = true) -> "Provider account problem"
-                status == 404 || (status == 400 && msg.contains("model", ignoreCase = true)) -> "Model not available"
-                status != null && status >= 500 || msg.contains("overloaded", ignoreCase = true) -> "Provider is having problems"
+                status == 429 || msg.contains("rate limit", ignoreCase = true) -> L.agent.claudeTranscript.providerRateLimit
+                status == 401 || status == 403 -> L.agent.claudeTranscript.providerRejectedTheKey
+                status == 402 || msg.contains("insufficient", ignoreCase = true) || msg.contains("balance", ignoreCase = true) -> L.agent.claudeTranscript.providerAccountProblem
+                status == 404 || (status == 400 && msg.contains("model", ignoreCase = true)) -> L.agent.claudeTranscript.modelNotAvailable
+                status != null && status >= 500 || msg.contains("overloaded", ignoreCase = true) -> L.agent.claudeTranscript.providerIsHavingProblems
                 msg.contains("Connection refused", ignoreCase = true) || msg.contains("ECONN", ignoreCase = true) ||
-                    msg.contains("timed out", ignoreCase = true) || msg.contains("ENOTFOUND", ignoreCase = true) -> "Cannot reach the provider"
-                else -> "Provider error"
+                    msg.contains("timed out", ignoreCase = true) || msg.contains("ENOTFOUND", ignoreCase = true) -> L.agent.claudeTranscript.cannotReachTheProvider
+                else -> L.agent.claudeTranscript.providerError
             }
         }
 
         private fun errorTitle(subtype: String, msg: String): String = when {
-            msg.contains("login", ignoreCase = true) || msg.contains("auth", ignoreCase = true) -> "Sign-in Required"
-            msg.contains("rate", ignoreCase = true) || msg.contains("limit", ignoreCase = true) -> "Usage Limit Reached"
-            subtype == "error_max_turns" -> "Turn Limit Reached"
-            else -> "Claude Error"
+            msg.contains("login", ignoreCase = true) || msg.contains("auth", ignoreCase = true) -> L.agent.claudeTranscript.signInRequired
+            msg.contains("rate", ignoreCase = true) || msg.contains("limit", ignoreCase = true) -> L.agent.claudeTranscript.usageLimitReached
+            subtype == "error_max_turns" -> L.agent.claudeTranscript.turnLimitReached
+            else -> L.agent.claudeTranscript.claudeError
         }
 
         private fun commandDisplay(text: String): String? {
@@ -934,22 +953,30 @@ class ClaudeTranscript {
 
         private fun ClaudeContentBlock.toAttachment(uuid: String, index: Int): ChatAttachment? {
             val src = source ?: return null
+            // a bridge asked for media=refs saved the prompt's picture as a file of the chat: shown from there
+            val savedPath = src.path?.takeIf { src.type == "path" && it.isNotBlank() }
+            val savedUrl = savedPath?.let {
+                AuthPreferences.currentBridgeHttpUrl.trimEnd('/') + "/api/claude/attachments/raw?path=" +
+                    java.net.URLEncoder.encode(it, "UTF-8")
+            }
             return when (type) {
-                "image" -> ChatAttachment(
+                "image" -> InlineMediaStore.stored(ChatAttachment(
                     id = "${uuid}_att_$index",
                     name = "image_${index + 1}",
                     path = "",
                     isImage = true,
+                    url = savedUrl,
                     mimeType = src.media_type,
-                    base64 = src.data
-                )
-                "document" -> ChatAttachment(
+                    base64 = if (src.type == "base64") src.data else null
+                ))
+                "document" -> InlineMediaStore.stored(ChatAttachment(
                     id = "${uuid}_att_$index",
                     name = title ?: "document_${index + 1}",
                     path = "",
+                    url = savedUrl,
                     mimeType = src.media_type,
                     base64 = if (src.type == "base64") src.data else null
-                )
+                ))
                 else -> null
             }
         }
