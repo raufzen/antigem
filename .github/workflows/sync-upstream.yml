@@ -27,7 +27,7 @@ jobs:
       - name: Add Upstream and Fetch
         run: |
           git remote add upstream https://github.com/Santoshkurmi/antigem.git
-          git fetch upstream standalone --tags
+          git fetch upstream standalone --tags --force
 
       - name: Check for New Upstream Commits
         id: check_upstream
@@ -57,4 +57,4 @@ jobs:
 
           git add app/src/*/res/values/strings.xml
           git commit -m "chore(branding): preserve AntiGem by Rauf branding" || true
-          git push origin standalone
+          git push origin standalone --tags
