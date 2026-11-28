@@ -752,6 +752,24 @@ class AgyChatBackend(
     private var cloudSyncJob: Job? = null
     private val summariesLock = Any()
 
+    /** Cloud chat id → the newest updatedAt it was given (kept across a stream's reconnects). Under [summariesLock]. */
+    private val cloudUpdatedAt = HashMap<String, Long>()
+
+    /**
+     * [c] with the newest time seen for it, for a cloud chat: both chat lists (the hub's own and the cloud one) carry
+     * cloud chats, sometimes with an older time (the hub re-sends remembered summaries, reconnects resend all), so
+     * taking each frame's time as it came moved the chat up and down the list. Other chats are returned as they are.
+     * Call under [summariesLock].
+     */
+    private fun steadyCloudTime(c: Conversation): Conversation {
+        if (!c.isCloud) return c
+        val seen = cloudUpdatedAt[c.id] ?: 0L
+        // (no time at all yet: now, once, then it stays)
+        val time = maxOf(seen, c.updatedAt).takeIf { it > 0L } ?: System.currentTimeMillis()
+        if (time != seen) cloudUpdatedAt[c.id] = time
+        return if (time == c.updatedAt) c else c.copy(updatedAt = time)
+    }
+
     /**
      * Keeps the Antigravity cloud chats (Remote Agents) in the chat list, next to the hub's own. Quietly does nothing
      * for an account or hub without cloud agents.
@@ -798,7 +816,7 @@ class AgyChatBackend(
                                 }
                             }
                             for (c in update.updated) {
-                                map[c.id] = c
+                                map[c.id] = steadyCloudTime(c)
                                 knownDaemonCascadeIds.add(c.id)
                             }
                             _conversations.value = map.values.sortedByDescending { it.updatedAt }
@@ -866,7 +884,7 @@ class AgyChatBackend(
                             for (conv in update.updated) {
                                 // a cloud chat the hub lists itself, while cloud agents are off in Settings
                                 if (conv.isCloud && !AgyCloud.enabled.value && conv.id != activeId) continue
-                                currentMap[conv.id] = conv
+                                currentMap[conv.id] = steadyCloudTime(conv)
                                 knownDaemonCascadeIds.add(conv.id)
                             }
 
@@ -1643,6 +1661,9 @@ class AgyChatBackend(
             if (currentAtts.any { it.isAudio }) "Voice note" else if (currentAtts.any { it.isImage }) "Image" else "Attachment"
         }
         _attachments.value = emptyList()
+        // an edited message's attachments, maybe still being copied (see revertAndEditLastUserMessage)
+        val keptEdit = keptEditAttachments
+        keptEditAttachments = null
 
         val conv = _currentConversation.value ?: return
         val userMsg = ChatMessage(
@@ -1698,10 +1719,12 @@ class AgyChatBackend(
             synchronized(summariesLock) {
                 val current = _conversations.value
                 val exists = current.any { it.id == updatedConv.id }
+                // (a cloud chat keeps this send time: an older frame from the hub doesn't move it back down)
+                val row = steadyCloudTime(updatedConv)
                 val newConversations = if (exists) {
-                    current.map { if (it.id == updatedConv.id) updatedConv else it }
+                    current.map { if (it.id == row.id) row else it }
                 } else {
-                    listOf(updatedConv) + current
+                    listOf(row) + current
                 }
                 _conversations.value = newConversations.sortedByDescending { it.updatedAt }
             }
@@ -1709,11 +1732,22 @@ class AgyChatBackend(
             // Prepare media payload for all attachments (images, audio, files)
             val mediaList = mutableListOf<ai.antigem.data.remote.AgyHubClient.AgyMediaItem>()
             val hubUrl = AuthPreferences.currentHubUrl
+            val kept = keptEdit?.await().orEmpty()
+            // files a cloud chat could not be sent (named to the agent in a hidden note)
+            val cloudFailed = mutableListOf<String>()
 
-            for (att in currentAtts) {
+            for (att in currentAtts.mapNotNull { if (kept.containsKey(it.id)) kept[it.id] else it }) {
                 // A file by path is already listed in the message's text. Its own path is never sent as Media.uri:
                 // the hub MOVES a file given that way, so only an image's shrunk copy goes (saved as a hub artifact)
-                if (att.reference && att.base64.isNullOrBlank()) continue
+                if (att.reference && att.base64.isNullOrBlank()) {
+                    // a cloud chat runs in Google's cloud, where that path means nothing (its text has no file list):
+                    // the file itself goes with the message
+                    if (conv.isCloud && att.path.isNotBlank()) {
+                        val item = cloudFileMedia(att)
+                        if (item != null) mediaList.add(item) else cloudFailed.add(att.name.ifBlank { att.path.substringAfterLast('/') })
+                    }
+                    continue
+                }
                 var hostPath = if (!att.reference && att.path.isNotBlank() && !att.path.startsWith("/data/") && !att.path.startsWith("content://")) att.path else ""
                 val b64 = when {
                     !att.base64.isNullOrBlank() -> att.base64
@@ -1769,12 +1803,49 @@ class AgyChatBackend(
             executeStream(
                 updatedConv, updatedList,
                 mediaItems = mediaList,
-                promptText = finalPrompt,
+                promptText = if (cloudFailed.isEmpty()) finalPrompt else finalPrompt + "\n\n" + cloudFilesMissingNote(cloudFailed),
                 queued = queued,
                 clientMessageId = clientMessageId
             )
         }
     }
+
+    /**
+     * A file attached by path ([ChatAttachment.reference]) for a cloud chat. The file is on the hub's machine (a copy
+     * in the uploads folder, or the user's own file picked in Files): the hub copies it into its temp media
+     * (SaveMediaAsArtifact with the path, the original is not touched), and a message carrying that temp media's uri
+     * goes to the cloud with the file's bytes (the hub's cloud proxy inlines it). Null, with a toast, when the hub
+     * refused it (e.g. over [AgyCloud.MAX_FILE_BYTES]).
+     */
+    private suspend fun cloudFileMedia(att: ChatAttachment): ai.antigem.data.remote.AgyHubClient.AgyMediaItem? {
+        val name = att.name.ifBlank { att.path.substringAfterLast('/') }
+        val mime = att.mimeType?.takeIf { it.isNotBlank() } ?: ai.antigem.data.files.AttachedFiles.mimeOf(name)
+        val res = agyHubClient.saveFileAsArtifact(path = att.path, mimeType = mime, description = name)
+        val uri = res.getOrNull()?.takeIf { it.isNotBlank() }
+        if (uri == null) {
+            val err = res.exceptionOrNull()?.message ?: L.agent.agyChatBackend.unknownError
+            Log.w("AgyChatBackend", "Cloud chat: could not send ${att.path}: $err")
+            ai.antigem.ui.components.AppToastHelper.showToast(
+                L.agent.agyChatBackend.couldntSendFilenameToTheCloud(name, err), ai.antigem.ui.components.ChatToastType.ERROR
+            )
+            return null
+        }
+        return ai.antigem.data.remote.AgyHubClient.AgyMediaItem(
+            mimeType = mime,
+            base64 = "",
+            description = name,
+            uri = uri,
+            displayName = name
+        )
+    }
+
+    /** Tells a cloud agent which attached files did not reach it (the user got a toast for each). */
+    private fun cloudFilesMissingNote(names: List<String>): String = ai.antigem.data.remote.PromptExpansion.hidden(buildString {
+        append("(Hidden note added by the AntiGem app: it is not part of the user's message. Never quote it.)\n")
+        append("The user attached these files, but they could not be uploaded to you, so you do not have them: ")
+        append(names.joinToString(", "))
+        append(". If the task needs them, say so and ask the user to attach them again (up to 20 MB a file).")
+    })
 
     /**
      * "Send now" on a queued message: it is sent again to run right away (interrupting the current work), then
@@ -1914,6 +1985,52 @@ class AgyChatBackend(
     }
 
     /**
+     * Attachments of the message being edited, copied into the app's own storage (id → copy, null when the file could
+     * not be found; see [keepRestoredAttachments]). A send right after the edit waits for them.
+     */
+    @Volatile private var keptEditAttachments: kotlinx.coroutines.Deferred<Map<String, ChatAttachment?>>? = null
+
+    /**
+     * Copies the attachments put back in the input box by an edit (images, voice notes, files) into the app's media
+     * store, as a fresh pick would be: a sent attachment only points at the file the hub saved for the chat, and the
+     * hub deletes that file when the edit takes back the chat's first message. Returns id → the copy (its old path
+     * dropped, so it is sent as data again), or null when the file could not be found. A file attached by reference
+     * (a file on the agent's machine, listed in the message's text) is left out: it keeps going by its path.
+     */
+    private suspend fun keepRestoredAttachments(atts: List<ChatAttachment>, hubUrl: String): Map<String, ChatAttachment?> {
+        val kept = HashMap<String, ChatAttachment?>()
+        for (att in atts) {
+            if (att.reference || att.path.isBlank() || att.path.startsWith("content://") || att.path.startsWith("http")) continue
+            try {
+                // its data is already in the app (the step's inline data): only the old path has to go
+                val ownData = !att.base64.isNullOrBlank() ||
+                    att.localUri?.takeIf { it.startsWith("file://") }?.let { java.io.File(Uri.parse(it).path ?: "").isFile } == true
+                if (ownData) {
+                    kept[att.id] = att.copy(path = "")
+                    continue
+                }
+                val source = java.io.File(att.path).takeIf { it.isFile && it.canRead() }
+                    ?: ai.antigem.data.remote.HubMediaResolver.cachedFile(att.path)
+                    ?: ai.antigem.data.remote.HubMediaResolver.resolveMediaUri(application, att.path, agyHubClient, hubUrl)
+                        .takeIf { it.startsWith("file://") }?.let { java.io.File(it.removePrefix("file://")) }?.takeIf { it.isFile }
+                val copy = source?.let { ai.antigem.data.media.InlineMediaStore.fileForBytes(it.readBytes(), att.mimeType) }
+                if (copy == null) {
+                    Log.w("ChatViewModel", "Edit: attachment not found: ${att.name} (${att.path})")
+                    kept[att.id] = null
+                    continue
+                }
+                kept[att.id] = att.copy(path = "", localUri = "file://${copy.absolutePath}", size = if (att.size > 0) att.size else copy.length())
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("ChatViewModel", "Edit: could not read attachment ${att.name}: ${e.message}")
+                kept[att.id] = null
+            }
+        }
+        return kept
+    }
+
+    /**
      * Reverts a user message: restores prompt text and attachments to the input box,
      * immediately prunes it from the local UI, and sends an undo RPC to the AGY hub daemon.
      */
@@ -1944,6 +2061,11 @@ class AgyChatBackend(
         if (targetMsg.attachments.isNotEmpty()) {
             _attachments.value = targetMsg.attachments
         }
+        // copied before the hub is asked to revert (taking back the first message deletes the files they point at)
+        val hubUrlForCopies = AuthPreferences.currentHubUrl
+        val keep = if (targetMsg.attachments.isEmpty()) null
+            else backendScope.async(Dispatchers.IO) { keepRestoredAttachments(targetMsg.attachments, hubUrlForCopies) }
+        keptEditAttachments = keep
 
         onRestored(cleanText)
 
@@ -1962,17 +2084,30 @@ class AgyChatBackend(
             val defaultWorkspaceUri = if (defaultProjPath.isNotBlank()) {
                 if (defaultProjPath.startsWith("file://")) defaultProjPath else "file://$defaultProjPath"
             } else ""
-            _currentConversation.value = Conversation(
+            val newConv = Conversation(
                 id = UUID.randomUUID().toString(),
                 title = "New Chat",
                 modelId = modelToUse,
                 sessionId = UUID.randomUUID().toString(),
                 workspaceUri = defaultWorkspaceUri
             )
+            _currentConversation.value = newConv
+            // the deleted chat's turns (and its attachments' paths, gone with it) must not carry over into the new one
+            trajectoryEngine.reset(newConv.id, force = true)
         }
 
         backendScope.launch(Dispatchers.IO) {
             val hubUrl = AuthPreferences.currentHubUrl
+            keep?.await()?.takeIf { it.isNotEmpty() }?.let { kept ->
+                val missing = kept.values.count { it == null }
+                withContext(Dispatchers.Main) {
+                    // an attachment that could not be found leaves the input box (there is nothing to send)
+                    _attachments.value = _attachments.value.mapNotNull { if (kept.containsKey(it.id)) kept[it.id] else it }
+                    if (missing > 0) {
+                        android.widget.Toast.makeText(application, L.agent.agyChatBackend.editedMessageAttachmentsMissing(missing), android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
             val modelEnum = ai.antigem.data.remote.AgyHubClient.resolveModelEnum(_selectedModelId.value)
             val res = agyHubClient.revertUserMessage(conv.id, modelEnum, targetMsg.stepIndex, hubUrl)
             if (res.isSuccess) {

@@ -119,6 +119,8 @@ fun IdeScreen(
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var showFileManager by remember { mutableStateOf(false) }
     var saveAsDialogTab by remember { mutableStateOf<OpenTab?>(null) }
+    // the path bar's "Open folder": this folder waits for the user to confirm it as the project
+    var folderToOpen by remember { mutableStateOf<String?>(null) }
     var tabToClose by remember { mutableStateOf<OpenTab?>(null) }
     var conflictDialogTab by remember { mutableStateOf<OpenTab?>(null) }
     var autoUpdateNotification by remember { mutableStateOf<String?>(null) }
@@ -247,6 +249,8 @@ fun IdeScreen(
 
     /** [force]: read the shown folders again even when the bridge says they did not change (the Refresh button). */
     fun refreshProjectsAndTree(force: Boolean = false) {
+        // the path bar's "~": read once per bridge, again when it reconnects
+        coroutineScope.launch { BridgeHome.load(force) }
         coroutineScope.launch {
             val projs = IdeDaemonManager.loadProjects(conversations)
             val current = IdeDaemonManager.activeProject.value
@@ -320,6 +324,10 @@ fun IdeScreen(
     val isMarkdownFile = activeTab != null && FileKinds.of(activeTab.name) == ai.antigem.data.files.FileKind.MARKDOWN
     var showMarkdownPreview by remember(activeTabPath) { mutableStateOf(false) }
     val isMarkdownPreview = isMarkdownFile && showMarkdownPreview
+    // an HTML tab opens as source too; the same eye button shows it as a web page
+    val isHtmlFile = activeTab != null && !activeTab.isDiff && activeExt in HTML_PREVIEW_EXTS
+    var showHtmlPreview by remember(activeTabPath) { mutableStateOf(false) }
+    val isHtmlPreview = isHtmlFile && showHtmlPreview
     var binaryWarningDialog by remember { mutableStateOf<BinaryWarningTab?>(null) }
     var tooLargeDialog by remember { mutableStateOf<TooLargeFile?>(null) }
 
@@ -368,7 +376,8 @@ fun IdeScreen(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = isVisible && (drawerState.isOpen || runnerSession == null),
+        // no swipe-to-open over the run panel or the HTML preview (the page gets its own swipes); the menu button still opens it
+        gesturesEnabled = isVisible && (drawerState.isOpen || (runnerSession == null && !isHtmlPreview)),
         drawerContent = {
             ModalDrawerSheet(
                 // the sidebar's own color, so the sheet's strip right of it and behind the status bar match it
@@ -487,8 +496,10 @@ fun IdeScreen(
                         )
                     },
                     actions = {
-                        val isTextFile = activeTab != null && (!isImageFile || (isSvgFile && showSvgSource)) && !isMarkdownPreview
+                        val isTextFile = activeTab != null && (!isImageFile || (isSvgFile && showSvgSource)) && !isMarkdownPreview && !isHtmlPreview
                         val isTextEditable = isTextFile && !activeTab.isReadOnly
+                        // a Markdown / HTML preview keeps the editor's buttons in place (greyed out), so the eye button doesn't move
+                        val showEditorButtons = isTextFile || isMarkdownPreview || isHtmlPreview
                         var showMoreOptionsMenu by remember { mutableStateOf(false) }
 
                         // Markdown Source / Rendered Preview Toggle
@@ -509,11 +520,30 @@ fun IdeScreen(
                             }
                         }
 
+                        // HTML Source / Rendered Page Toggle
+                        if (isHtmlFile) {
+                            IconButton(
+                                onClick = {
+                                    if (!showHtmlPreview) showFindBar = false
+                                    showHtmlPreview = !showHtmlPreview
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (showHtmlPreview) Icons.Default.Code else Icons.Default.Visibility,
+                                    contentDescription = if (showHtmlPreview) L.ide.screen.editHtmlSource else L.ide.screen.previewHtml,
+                                    tint = if (showHtmlPreview) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
                         // Three-Dot More Options Menu (Word Wrap, Find in file, SVG toggle)
-                        if (isTextFile) {
+                        if (showEditorButtons) {
                             Box {
                                 IconButton(
                                     onClick = { showMoreOptionsMenu = true },
+                                    enabled = isTextFile,
                                     modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
@@ -611,8 +641,8 @@ fun IdeScreen(
                             }
                         }
 
-                        // Undo & Redo Buttons
-                        if (isTextFile) {
+                        // Undo & Redo Buttons (greyed out in a preview: isTextEditable is false there)
+                        if (showEditorButtons) {
                             IconButton(
                                 onClick = { currentEditorView?.undo() },
                                 enabled = canUndo && isTextEditable,
@@ -1029,6 +1059,15 @@ fun IdeScreen(
                     .fillMaxSize()
                     .background(ai.antigem.theme.AppColors.editorBg)
             ) {
+                // Where the open file is (tap to copy its full path; "Open folder" when it is outside the project)
+                if (activeTab != null) {
+                    ActiveFilePathBar(
+                        tab = activeTab,
+                        projectPath = activeProject?.path,
+                        onOpenFolder = { folderToOpen = it }
+                    )
+                }
+
                 // Open File Tabs Bar
                 if (openTabs.isNotEmpty()) {
                     LazyRow(
@@ -1099,7 +1138,7 @@ fun IdeScreen(
                 }
 
                 // Interactive Find in File Bar
-                if (showFindBar && activeTab != null && !isImageFile && !(isSvgFile && !showSvgSource) && !isMarkdownPreview) {
+                if (showFindBar && activeTab != null && !isImageFile && !(isSvgFile && !showSvgSource) && !isMarkdownPreview && !isHtmlPreview) {
                     LaunchedEffect(Unit) {
                         currentEditorView?.editor?.clearFocus()
                         currentEditorView?.clearFocus()
@@ -1475,6 +1514,15 @@ fun IdeScreen(
                                 )
                             }
                         }
+                    } else if (isHtmlPreview) {
+                        // the tab's current text (unsaved edits included); its CSS, JS and pictures from its folder
+                        HtmlFilePreview(
+                            path = activeTab.path,
+                            html = activeTab.content,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .weight(1f)
+                        )
                     } else {
                         // the editor follows the app theme's IDE colors (re-applied when the theme changes)
                         val editorThemeColors = ai.antigem.ui.ide.EditorThemeColors.fromAppTheme()
@@ -1723,6 +1771,52 @@ fun IdeScreen(
                             }
                         ) {
                             Text(L.ide.screen.revertToDisk, color = ai.antigem.theme.AppColors.danger)
+                        }
+                    }
+                )
+            }
+
+            // The open file's folder as the project (the path bar's "Open folder"): the open tabs stay as they are
+            folderToOpen?.let { folder ->
+                val bridgeHome by BridgeHome.home.collectAsState()
+                val folderName = File(folder).name.ifBlank { folder }
+                AlertDialog(
+                    onDismissRequest = { folderToOpen = null },
+                    icon = { Icon(Icons.Default.FolderOpen, contentDescription = null, tint = ClaudeTerracotta) },
+                    title = { Text(L.ide.screen.openNameAsTheProject(folderName), fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column {
+                            Text(
+                                text = remember(folder, bridgeHome) { shortenHome(folder, context, bridgeHome) },
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(L.ide.screen.theSidebarGitAndRunWill, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                folderToOpen = null
+                                // the project already in the list when there is one (either way Android writes the app's folder)
+                                val proj = allProjects.find { oneDataForm(it.path.trimEnd('/')) == oneDataForm(folder) }
+                                    ?: ProjectItem(folderName, folder)
+                                IdeDaemonManager.setActiveProject(proj)
+                                viewModel?.onProjectChanged(proj.path)
+                                refreshProjectsAndTree()
+                                // its files, right away
+                                coroutineScope.launch { drawerState.open() }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)
+                        ) {
+                            Text(L.common.open)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { folderToOpen = null }) {
+                            Text(L.common.cancel)
                         }
                     }
                 )

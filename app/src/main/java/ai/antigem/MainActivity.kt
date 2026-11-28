@@ -37,7 +37,9 @@ enum class AppViewMode {
     NOTES,
     FILES,
     /** The Run screen: a folder's commands and their live output (runs keep going on other screens) */
-    RUN
+    RUN,
+    /** Private Space: passwords, API keys, 2FA and private notes, encrypted; composed only while shown */
+    PRIVATE_SPACE
 } 
 
 class MainActivity : ComponentActivity() {
@@ -121,6 +123,14 @@ class MainActivity : ComponentActivity() {
                 moveTaskToBack(true)
             }
         })
+
+        // Android 7-8 focus the first focusable view on their own (when the window opens and every time focus is
+        // cleared). Inside Compose that is the first text field on screen, e.g. the Browser's address bar, whose search
+        // panel and keyboard then open by themselves and come back after every Back. The plain content frame takes that
+        // focus instead, so nothing is focused until the user taps, as on Android 9+.
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.P) {
+            findViewById<android.view.View>(android.R.id.content).isFocusableInTouchMode = true
+        }
 
         setContent {
             val initialThemeMode = remember { chatViewModel.authPreferences.getThemeModeSync() }
@@ -211,6 +221,8 @@ class MainActivity : ComponentActivity() {
             // The page overview opens from a tap on the switcher's pill ("SWITCHER"), from its own pill ("OWN_PILL"), or is off
             val pageOverviewMode by switcherPrefs.pageOverviewMode
                 .collectAsState(initial = switcherPrefs.getPageOverviewModeSync())
+            val pageOverviewKeepScroll by switcherPrefs.pageOverviewKeepScroll
+                .collectAsState(initial = switcherPrefs.getPageOverviewKeepScrollSync())
             val switcherTapOpensOverview = pageOverviewMode == "SWITCHER"
             val overviewPillEnabled = pageOverviewMode == "OWN_PILL"
             val floatingSwitcherScale by switcherPrefs.floatingSwitcherScale
@@ -237,6 +249,8 @@ class MainActivity : ComponentActivity() {
             val updateManager = remember { ai.antigem.data.updater.AppUpdateManager(this@MainActivity) }
 
             var appUpdateCheckDone by remember { mutableStateOf(false) }
+            // beta updates turned off by themselves with this stable version: told once, after the app's update dialog
+            var showBetaOffNotice by remember { mutableStateOf(ai.antigem.data.updater.BetaUpdates.offNoticeDue(this@MainActivity)) }
 
             LaunchedEffect(Unit) {
                 updateManager.checkForUpdates().onSuccess { info ->
@@ -245,14 +259,17 @@ class MainActivity : ComponentActivity() {
                 appUpdateCheckDone = true
             }
 
-            // The app in a community language: its update is looked for in the background at the same time, and offered
-            // only once the app's own check is done and its dialog is closed (one dialog at a time)
-            LaunchedEffect(Unit) { ai.antigem.i18n.LanguageUpdateCheck.start(this@MainActivity) }
+            // The app in a community language: its update is looked for in the background each time the app comes to the
+            // foreground (at most every 30 minutes), and offered only once the app's own check is done and its dialog is
+            // closed (one dialog at a time)
+            androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_START) {
+                ai.antigem.i18n.LanguageUpdateCheck.start(this@MainActivity)
+            }
             val languageUpdateOffer = ai.antigem.i18n.LanguageUpdateCheck.offer
             var languageUpdateTurn by remember { mutableStateOf(false) }
-            LaunchedEffect(appUpdateCheckDone, pendingUpdateInfo == null, languageUpdateOffer) {
+            LaunchedEffect(appUpdateCheckDone, pendingUpdateInfo == null, showBetaOffNotice, languageUpdateOffer) {
                 languageUpdateTurn = false
-                if (appUpdateCheckDone && pendingUpdateInfo == null && languageUpdateOffer != null) {
+                if (appUpdateCheckDone && pendingUpdateInfo == null && !showBetaOffNotice && languageUpdateOffer != null) {
                     // a moment after the app's dialog closed, so it doesn't look like the same dialog coming back
                     kotlinx.coroutines.delay(600)
                     languageUpdateTurn = true
@@ -630,6 +647,19 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
 
+                                // Private Space (passwords, keys, private notes): composed only while it is the page shown, so nothing of
+                                // it exists off screen, and never pictured for the page overview (PageSnapshots skips it)
+                                if (currentViewMode == AppViewMode.PRIVATE_SPACE) {
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        ai.antigem.ui.privatespace.PrivateSpaceScreen(
+                                            onClose = {
+                                                currentViewMode =
+                                                    if (previousViewMode == AppViewMode.PRIVATE_SPACE) AppViewMode.CHAT else previousViewMode
+                                            }
+                                        )
+                                    }
+                                }
+
                                 // Floating App Switcher Across Whole App (always on; renders on top of Chat, IDE, Terminal, Browser)
                                 // Its Terminal needs a shell: SSH, server mode, or the local Linux tools (turned on here when
                                 // installed but off); without any, it offers to install the Linux tools instead.
@@ -696,6 +726,7 @@ class MainActivity : ComponentActivity() {
                                         "notes" -> AppViewMode.NOTES
                                         "files" -> AppViewMode.FILES
                                         "run" -> AppViewMode.RUN
+                                        "private" -> AppViewMode.PRIVATE_SPACE
                                         else -> null
                                     }
                                     when {
@@ -721,7 +752,8 @@ class MainActivity : ComponentActivity() {
                                     },
                                     // a tile held and dragged to a new place: the switcher's order (its panel and Settings follow)
                                     onReorder = { order -> chatViewModel.setFloatingSwitcherItems(order) },
-                                    onDismiss = { showPageOverview = false }
+                                    onDismiss = { showPageOverview = false },
+                                    keepScroll = pageOverviewKeepScroll
                                 )
                                 ai.antigem.ui.components.FloatingSwitcherWidget(
                                     currentViewMode = currentViewMode,
@@ -762,6 +794,10 @@ class MainActivity : ComponentActivity() {
                                     onNavigateToRun = {
                                         previousViewMode = currentViewMode
                                         currentViewMode = AppViewMode.RUN
+                                    },
+                                    onNavigateToPrivateSpace = {
+                                        previousViewMode = currentViewMode
+                                        currentViewMode = AppViewMode.PRIVATE_SPACE
                                     },
                                     onNavigateBack = switcherNavigateBack,
                                     onPositionSaved = { x, y ->
@@ -900,8 +936,16 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
+                                // Beta updates turned off by this stable version (once, after the app's update dialog)
+                                if (showBetaOffNotice && appUpdateCheckDone && pendingUpdateInfo == null) {
+                                    ai.antigem.ui.updater.BetaOffNoticeDialog(onDismiss = {
+                                        ai.antigem.data.updater.BetaUpdates.offNoticeShown(this@MainActivity)
+                                        showBetaOffNotice = false
+                                    })
+                                }
+
                                 // A newer version of the community language on screen (never together with the app's)
-                                if (languageUpdateTurn && pendingUpdateInfo == null) languageUpdateOffer?.let { offer ->
+                                if (languageUpdateTurn && pendingUpdateInfo == null && !showBetaOffNotice) languageUpdateOffer?.let { offer ->
                                     ai.antigem.ui.updater.LanguageUpdateDialog(
                                         offer = offer,
                                         onNotNow = { ai.antigem.i18n.LanguageUpdateCheck.notNow(this@MainActivity) },
@@ -916,6 +960,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
+    // A view the app does not own (e.g. one the system puts in the window) can leave state that
+    // cannot be read back on recreate; drop the old view state instead of crashing. Compose
+    // rememberSaveable state is restored separately (SavedStateRegistry), so it is not lost.
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        try {
+            super.onRestoreInstanceState(savedInstanceState)
+        } catch (e: RuntimeException) {
+            android.util.Log.w("MainActivity", "Skipped restoring view state", e)
+        }
+    }
 
     override fun onResume() {
         super.onResume()

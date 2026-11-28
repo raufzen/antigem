@@ -43,6 +43,8 @@
     <uses-permission android:name="${applicationId}.permission.API" />
     <!-- Home-screen shortcuts on Android 7 launchers (Android 8+ asks the launcher directly) -->
     <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
+    <!-- Private Space: fingerprint unlock (BiometricPrompt, Android 9+) -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
@@ -369,6 +371,22 @@
             android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <!-- "AntiGem script" in the launcher's widgets/shortcuts list (like Termux:Widget's): pick a script of
+             ~/.shortcuts, the launcher gets its signed shortcut back. Exported: launchers start it. -->
+        <activity
+            android:name="ai.antigem.ui.homescreen.ScriptShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/shortcut_script_label"
+            android:taskAffinity="${applicationId}.scriptshortcut"
+            android:theme="@style/Theme.Gemini"
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|smallestScreenSize">
+            <intent-filter>
+                <action android:name="android.intent.action.CREATE_SHORTCUT" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
